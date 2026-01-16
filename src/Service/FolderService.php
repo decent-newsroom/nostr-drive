@@ -289,7 +289,7 @@ final class FolderService
 
         // First pass: collect 'a' tags by position
         foreach ($event['tags'] ?? [] as $tag) {
-            if ($tag[0] === 'a' && isset($tag[1], $tag[3])) {
+            if ($tag[0] === 'a' && isset($tag[1], $tag[3]) && is_numeric($tag[3])) {
                 $coordinate = $tag[1];
                 $position = (int) $tag[3];
                 $aTagsByPosition[$position] = $coordinate;
@@ -305,8 +305,8 @@ final class FolderService
             } elseif ($tag[0] === 'e') {
                 // Entry tag: ['e', eventId, relay, kind, position]
                 $eventId = $tag[1] ?? '';
-                $kind = isset($tag[3]) ? (int) $tag[3] : 0;
-                $position = isset($tag[4]) ? (int) $tag[4] : count($entries);
+                $kind = isset($tag[3]) && is_numeric($tag[3]) ? (int) $tag[3] : 0;
+                $position = isset($tag[4]) && is_numeric($tag[4]) ? (int) $tag[4] : count($entries);
 
                 if (!empty($eventId) && $kind > 0) {
                     // Check if there's a corresponding 'a' tag for this position
@@ -314,7 +314,8 @@ final class FolderService
                     $dtag = null;
                     if (isset($aTagsByPosition[$position])) {
                         $parts = explode(':', $aTagsByPosition[$position], 3);
-                        if (count($parts) === 3) {
+                        // Validate coordinate format: kind:pubkey:d-tag
+                        if (count($parts) === 3 && is_numeric($parts[0]) && (int)$parts[0] === $kind) {
                             $pubkey = $parts[1];
                             $dtag = $parts[2];
                         }
