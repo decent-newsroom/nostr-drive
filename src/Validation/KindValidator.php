@@ -14,6 +14,10 @@ final class KindValidator
 {
     /**
      * Allowed event kinds for folder entries
+     * 
+     * Note: Drive (30042) and Folder (30045) events are intentionally excluded
+     * to prevent circular references and maintain a clear hierarchy.
+     * 
      * 30040, 30041 - File events
      * 30024, 30023 - Long-form content
      * 31924, 31923, 31922 - App-specific events
