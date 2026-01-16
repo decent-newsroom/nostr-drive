@@ -19,10 +19,10 @@ The library is organized into several layers:
 
 ### Domain
 Contains the core domain models:
-- **Address**: Represents a Nostr address (pubkey + optional relay hints)
+- **Address**: Represents a Nostr address - can be either a pubkey or a coordinate (kind:pubkey:d-tag for addressable events)
 - **Drive**: Represents a Drive event (kind:30042), the root container for organizing files and folders
 - **Folder**: Represents a Folder event (kind:30045), which can contain entries of allowed kinds
-- **FolderEntry**: Represents an entry within a folder
+- **FolderEntry**: Represents an entry within a folder, supporting both event IDs and addressable coordinates
 
 ### Contract
 Defines the interfaces that must be implemented:
@@ -103,9 +103,12 @@ $drive = $driveService->create(
     $address,
     'my-drive',      // identifier (d-tag)
     'My Drive',      // name
-    [],              // additional tags
-    []               // metadata
+    []               // additional tags
 );
+
+// Create an address as a coordinate
+$coordinateAddress = new Address('pubkey123', [], 30042, 'my-drive');
+echo $coordinateAddress->toString(); // "30042:pubkey123:my-drive"
 
 // Get a drive
 $drive = $driveService->get($address, 'my-drive');
@@ -133,8 +136,7 @@ $folder = $folderService->create(
     $address,
     'my-folder',     // identifier (d-tag)
     'My Folder',     // name
-    [],              // additional tags
-    []               // metadata
+    []               // additional tags
 );
 
 // Get a folder
@@ -149,11 +151,20 @@ $folderService->update($folder);
 
 ```php
 // Add an entry to a folder (only allowed kinds: 30040, 30041, 30024, 30023, 31924, 31923, 31922)
+// Regular event (by event ID only)
 $folder = $folderService->addEntry(
     $folder,
-    'event123',      // event ID to add
-    30040,           // event kind
-    []               // optional metadata
+    'event123',      // event ID
+    30040            // event kind
+);
+
+// Addressable event (with coordinate - both 'e' and 'a' tags will be used)
+$folder = $folderService->addEntry(
+    $folder,
+    'event456',      // event ID
+    30041,           // event kind
+    'pubkey789',     // pubkey for addressable event
+    'my-file'        // d-tag identifier for addressable event
 );
 
 // Remove an entry from a folder
@@ -201,12 +212,14 @@ $allowedKinds = KindValidator::getAllowedKinds();
 
 ### Drive Event (kind:30042)
 
+Drive events have **empty content**. All information is stored in tags.
+
 ```json
 {
   "kind": 30042,
   "pubkey": "author_pubkey",
   "created_at": 1234567890,
-  "content": "{\"metadata\":\"here\"}",
+  "content": "",
   "tags": [
     ["d", "drive-identifier"],
     ["name", "My Drive"]
@@ -216,20 +229,26 @@ $allowedKinds = KindValidator::getAllowedKinds();
 
 ### Folder Event (kind:30045)
 
+Folder events have **empty content**. All information is stored in tags.
+Entries use both 'e' tags (event ID) and 'a' tags (addressable coordinate) for addressable events.
+
 ```json
 {
   "kind": 30045,
   "pubkey": "author_pubkey",
   "created_at": 1234567890,
-  "content": "{\"metadata\":\"here\"}",
+  "content": "",
   "tags": [
     ["d", "folder-identifier"],
     ["name", "My Folder"],
     ["e", "event_id_1", "", "30040", "0"],
-    ["e", "event_id_2", "", "30041", "1"]
+    ["e", "event_id_2", "", "30041", "1"],
+    ["a", "30041:pubkey789:my-file", "", "1"]
   ]
 }
 ```
+
+Note: The 'a' tag is only included for addressable replaceable events. Regular events only have an 'e' tag.
 
 ## Testing
 

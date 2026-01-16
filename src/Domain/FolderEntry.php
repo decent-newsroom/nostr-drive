@@ -6,7 +6,7 @@ namespace DecentNewsroom\NostrDrive\Domain;
 
 /**
  * Represents an entry within a Folder
- * Contains references to events of allowed kinds
+ * Contains references to events (either by event ID or addressable coordinate)
  */
 final class FolderEntry
 {
@@ -14,7 +14,8 @@ final class FolderEntry
         private string $eventId,
         private int $kind,
         private int $position,
-        private array $metadata = []
+        private ?string $pubkey = null,
+        private ?string $identifier = null
     ) {
     }
 
@@ -39,14 +40,32 @@ final class FolderEntry
         return $this;
     }
 
-    public function getMetadata(): array
+    public function getPubkey(): ?string
     {
-        return $this->metadata;
+        return $this->pubkey;
     }
 
-    public function setMetadata(array $metadata): self
+    public function getIdentifier(): ?string
     {
-        $this->metadata = $metadata;
-        return $this;
+        return $this->identifier;
+    }
+
+    /**
+     * Check if this is an addressable event (has coordinate)
+     */
+    public function isAddressable(): bool
+    {
+        return $this->pubkey !== null && $this->identifier !== null;
+    }
+
+    /**
+     * Get the coordinate string (kind:pubkey:d-tag)
+     */
+    public function toCoordinate(): ?string
+    {
+        if (!$this->isAddressable()) {
+            return null;
+        }
+        return "{$this->kind}:{$this->pubkey}:{$this->identifier}";
     }
 }

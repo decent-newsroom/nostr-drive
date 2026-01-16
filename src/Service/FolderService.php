@@ -30,7 +30,6 @@ final class FolderService
      * @param string $identifier The d-tag identifier for the folder
      * @param string $name The folder name
      * @param array $tags Additional tags
-     * @param array $metadata Additional metadata
      * @return Folder The created folder
      * @throws ValidationException If validation fails
      */
@@ -38,8 +37,7 @@ final class FolderService
         Address $address,
         string $identifier,
         string $name,
-        array $tags = [],
-        array $metadata = []
+        array $tags = []
     ): Folder {
         if (empty($identifier)) {
             throw new ValidationException('Folder identifier cannot be empty');
@@ -49,7 +47,7 @@ final class FolderService
             throw new ValidationException('Folder name cannot be empty');
         }
 
-        $folder = new Folder($address, $identifier, $name, $tags, $metadata);
+        $folder = new Folder($address, $identifier, $name, $tags);
 
         // Publish to event store
         $event = $this->folderToEvent($folder);
@@ -135,7 +133,8 @@ final class FolderService
      * @param Folder $folder The folder
      * @param string $eventId The event ID to add
      * @param int $kind The event kind
-     * @param array $metadata Optional metadata
+     * @param string|null $pubkey The pubkey for addressable events (optional)
+     * @param string|null $identifier The d-tag for addressable events (optional)
      * @return Folder The updated folder
      * @throws ValidationException If kind is not allowed
      */
@@ -143,7 +142,8 @@ final class FolderService
         Folder $folder,
         string $eventId,
         int $kind,
-        array $metadata = []
+        ?string $pubkey = null,
+        ?string $identifier = null
     ): Folder {
         // Validate the kind is allowed
         KindValidator::validate($kind);
@@ -152,7 +152,7 @@ final class FolderService
         $entries = $folder->getEntries();
         $position = count($entries);
 
-        $entry = new FolderEntry($eventId, $kind, $position, $metadata);
+        $entry = new FolderEntry($eventId, $kind, $position, $pubkey, $identifier);
         $folder->addEntry($entry);
 
         // Publish updated folder
@@ -237,8 +237,9 @@ final class FolderService
             ['name', $folder->getName()],
         ];
 
-        // Add entry tags
+        // Add entry tags (both 'e' and 'a' tags for addressable events)
         foreach ($folder->getEntries() as $entry) {
+            // Always add 'e' tag with event ID
             $tags[] = [
                 'e',
                 $entry->getEventId(),
@@ -246,6 +247,16 @@ final class FolderService
                 (string) $entry->getKind(),
                 (string) $entry->getPosition(),
             ];
+            
+            // Add 'a' tag for addressable replaceable events
+            if ($entry->isAddressable()) {
+                $tags[] = [
+                    'a',
+                    $entry->toCoordinate(),
+                    '',
+                    (string) $entry->getPosition(),
+                ];
+            }
         }
 
         foreach ($folder->getTags() as $tag) {
@@ -257,7 +268,7 @@ final class FolderService
             'kind' => Folder::KIND,
             'pubkey' => $folder->getAddress()->getPubkey(),
             'created_at' => $folder->getCreatedAt(),
-            'content' => json_encode($folder->getMetadata()),
+            'content' => '',
             'tags' => $tags,
         ];
     }
@@ -274,7 +285,18 @@ final class FolderService
         $name = '';
         $tags = [];
         $entries = [];
+        $aTagsByPosition = [];
 
+        // First pass: collect 'a' tags by position
+        foreach ($event['tags'] ?? [] as $tag) {
+            if ($tag[0] === 'a' && isset($tag[1], $tag[3])) {
+                $coordinate = $tag[1];
+                $position = (int) $tag[3];
+                $aTagsByPosition[$position] = $coordinate;
+            }
+        }
+
+        // Second pass: process all tags
         foreach ($event['tags'] ?? [] as $tag) {
             if ($tag[0] === 'd') {
                 $identifier = $tag[1] ?? '';
@@ -287,9 +309,20 @@ final class FolderService
                 $position = isset($tag[4]) ? (int) $tag[4] : count($entries);
 
                 if (!empty($eventId) && $kind > 0) {
-                    $entries[] = new FolderEntry($eventId, $kind, $position);
+                    // Check if there's a corresponding 'a' tag for this position
+                    $pubkey = null;
+                    $dtag = null;
+                    if (isset($aTagsByPosition[$position])) {
+                        $parts = explode(':', $aTagsByPosition[$position], 3);
+                        if (count($parts) === 3) {
+                            $pubkey = $parts[1];
+                            $dtag = $parts[2];
+                        }
+                    }
+                    $entries[] = new FolderEntry($eventId, $kind, $position, $pubkey, $dtag);
                 }
-            } else {
+            } elseif ($tag[0] !== 'a') {
+                // Skip 'a' tags as they're already processed
                 $tags[] = $tag;
             }
         }
@@ -297,13 +330,8 @@ final class FolderService
         // Sort entries by position
         usort($entries, fn(FolderEntry $a, FolderEntry $b) => $a->getPosition() <=> $b->getPosition());
 
-        $metadata = [];
-        if (!empty($event['content'])) {
-            $metadata = json_decode($event['content'], true) ?? [];
-        }
-
         $address = new Address($event['pubkey'] ?? '', []);
-        $folder = new Folder($address, $identifier, $name, $tags, $metadata);
+        $folder = new Folder($address, $identifier, $name, $tags);
         $folder->setEntries($entries);
 
         if (isset($event['id'])) {

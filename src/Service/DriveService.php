@@ -28,7 +28,6 @@ final class DriveService
      * @param string $identifier The d-tag identifier for the drive
      * @param string $name The drive name
      * @param array $tags Additional tags
-     * @param array $metadata Additional metadata
      * @return Drive The created drive
      * @throws ValidationException If validation fails
      */
@@ -36,8 +35,7 @@ final class DriveService
         Address $address,
         string $identifier,
         string $name,
-        array $tags = [],
-        array $metadata = []
+        array $tags = []
     ): Drive {
         if (empty($identifier)) {
             throw new ValidationException('Drive identifier cannot be empty');
@@ -47,7 +45,7 @@ final class DriveService
             throw new ValidationException('Drive name cannot be empty');
         }
 
-        $drive = new Drive($address, $identifier, $name, $tags, $metadata);
+        $drive = new Drive($address, $identifier, $name, $tags);
 
         // Publish to event store
         $event = $this->driveToEvent($drive);
@@ -149,7 +147,7 @@ final class DriveService
             'kind' => Drive::KIND,
             'pubkey' => $drive->getAddress()->getPubkey(),
             'created_at' => $drive->getCreatedAt(),
-            'content' => json_encode($drive->getMetadata()),
+            'content' => '',
             'tags' => $tags,
         ];
     }
@@ -176,13 +174,8 @@ final class DriveService
             }
         }
 
-        $metadata = [];
-        if (!empty($event['content'])) {
-            $metadata = json_decode($event['content'], true) ?? [];
-        }
-
         $address = new Address($event['pubkey'] ?? '', []);
-        $drive = new Drive($address, $identifier, $name, $tags, $metadata);
+        $drive = new Drive($address, $identifier, $name, $tags);
 
         if (isset($event['id'])) {
             $drive->setId($event['id']);

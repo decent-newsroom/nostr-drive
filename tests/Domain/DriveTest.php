@@ -35,17 +35,6 @@ class DriveTest extends TestCase
         $this->assertSame('New Name', $drive->getName());
     }
 
-    public function testCanSetAndGetMetadata(): void
-    {
-        $address = new Address('pubkey123');
-        $drive = new Drive($address, 'id', 'Name');
-
-        $metadata = ['key' => 'value'];
-        $drive->setMetadata($metadata);
-
-        $this->assertSame($metadata, $drive->getMetadata());
-    }
-
     public function testCanSetAndGetTags(): void
     {
         $address = new Address('pubkey123');

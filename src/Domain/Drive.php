@@ -20,8 +20,7 @@ final class Drive
         private Address $address,
         private string $identifier,
         private string $name,
-        private array $tags = [],
-        private array $metadata = []
+        private array $tags = []
     ) {
         $this->createdAt = time();
         $this->updatedAt = time();
@@ -68,18 +67,6 @@ final class Drive
     public function setTags(array $tags): self
     {
         $this->tags = $tags;
-        $this->updatedAt = time();
-        return $this;
-    }
-
-    public function getMetadata(): array
-    {
-        return $this->metadata;
-    }
-
-    public function setMetadata(array $metadata): self
-    {
-        $this->metadata = $metadata;
         $this->updatedAt = time();
         return $this;
     }
