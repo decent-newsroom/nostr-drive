@@ -1,0 +1,25 @@
+{
+    "name": "decent-newsroom/nostr-drive",
+    "description": "A framework-agnostic PHP library for managing filesystem-like hierarchies on Nostr using Drive (kind:30042) and Folder (kind:30045) events",
+    "type": "library",
+    "license": "MIT",
+    "keywords": ["nostr", "drive", "filesystem", "decentralized"],
+    "require": {
+        "php": "^8.2"
+    },
+    "require-dev": {
+        "phpunit/phpunit": "^10.5"
+    },
+    "autoload": {
+        "psr-4": {
+            "DecentNewsroom\\NostrDrive\\": "src/"
+        }
+    },
+    "autoload-dev": {
+        "psr-4": {
+            "DecentNewsroom\\NostrDrive\\Tests\\": "tests/"
+        }
+    },
+    "minimum-stability": "stable",
+    "prefer-stable": true
+}
