@@ -6,99 +6,137 @@ namespace DecentNewsroom\NostrDrive\Domain;
 
 /**
  * Represents a Folder event (kind:30045)
- * A folder can contain entries of allowed kinds
+ * A folder contains entries (coordinates) of allowed kinds
  */
 final class Folder
 {
     public const KIND = 30045;
 
-    private ?string $id = null;
+    private ?string $eventId = null;
     private int $createdAt;
-    private int $updatedAt;
     private array $entries = [];
 
+    /**
+     * @param Coordinate $coordinate The folder's coordinate (must be kind 30045)
+     * @param FolderEntry[] $entries Array of folder entries
+     * @param string|null $title Folder title
+     * @param string|null $description Folder description
+     * @param array $rawEvent The raw Nostr event
+     */
     public function __construct(
-        private Address $address,
-        private string $identifier,
-        private string $name,
-        private array $tags = []
+        private Coordinate $coordinate,
+        array $entries = [],
+        private ?string $title = null,
+        private ?string $description = null,
+        private array $rawEvent = []
     ) {
-        $this->createdAt = time();
-        $this->updatedAt = time();
+        if ($coordinate->getKind() !== self::KIND) {
+            throw new \InvalidArgumentException(
+                "Folder coordinate must be kind " . self::KIND . ", got {$coordinate->getKind()}"
+            );
+        }
+
+        // Validate entries
+        foreach ($entries as $entry) {
+            if (!$entry instanceof FolderEntry) {
+                throw new \InvalidArgumentException('All entries must be FolderEntry instances');
+            }
+        }
+        $this->entries = $entries;
+
+        $this->createdAt = $rawEvent['created_at'] ?? time();
     }
 
-    public function getId(): ?string
+    public function getCoordinate(): Coordinate
     {
-        return $this->id;
+        return $this->coordinate;
     }
 
-    public function setId(string $id): self
+    public function getEventId(): ?string
     {
-        $this->id = $id;
+        return $this->eventId;
+    }
+
+    public function setEventId(string $eventId): self
+    {
+        $this->eventId = $eventId;
         return $this;
     }
 
-    public function getAddress(): Address
+    public function getTitle(): ?string
     {
-        return $this->address;
+        return $this->title;
     }
 
-    public function getIdentifier(): string
+    public function setTitle(?string $title): self
     {
-        return $this->identifier;
-    }
-
-    public function getName(): string
-    {
-        return $this->name;
-    }
-
-    public function setName(string $name): self
-    {
-        $this->name = $name;
-        $this->updatedAt = time();
+        $this->title = $title;
         return $this;
     }
 
-    public function getTags(): array
+    public function getDescription(): ?string
     {
-        return $this->tags;
+        return $this->description;
     }
 
-    public function setTags(array $tags): self
+    public function setDescription(?string $description): self
     {
-        $this->tags = $tags;
-        $this->updatedAt = time();
+        $this->description = $description;
         return $this;
     }
 
+    /**
+     * @return FolderEntry[]
+     */
     public function getEntries(): array
     {
         return $this->entries;
     }
 
+    /**
+     * @param FolderEntry[] $entries
+     */
     public function setEntries(array $entries): self
     {
+        // Validate entries
+        foreach ($entries as $entry) {
+            if (!$entry instanceof FolderEntry) {
+                throw new \InvalidArgumentException('All entries must be FolderEntry instances');
+            }
+        }
         $this->entries = $entries;
-        $this->updatedAt = time();
         return $this;
     }
 
     public function addEntry(FolderEntry $entry): self
     {
         $this->entries[] = $entry;
-        $this->updatedAt = time();
         return $this;
     }
 
-    public function removeEntry(string $eventId): self
+    /**
+     * Remove entry by coordinate
+     */
+    public function removeEntry(Coordinate $coordinate): self
     {
         $this->entries = array_values(array_filter(
             $this->entries,
-            fn(FolderEntry $entry) => $entry->getEventId() !== $eventId
+            fn(FolderEntry $entry) => !$entry->getCoordinate()->equals($coordinate)
         ));
-        $this->updatedAt = time();
         return $this;
+    }
+
+    /**
+     * Check if folder contains an entry with the given coordinate
+     */
+    public function hasEntry(Coordinate $coordinate): bool
+    {
+        foreach ($this->entries as $entry) {
+            if ($entry->getCoordinate()->equals($coordinate)) {
+                return true;
+            }
+        }
+        return false;
     }
 
     public function getCreatedAt(): int
@@ -112,15 +150,9 @@ final class Folder
         return $this;
     }
 
-    public function getUpdatedAt(): int
+    public function getRawEvent(): array
     {
-        return $this->updatedAt;
-    }
-
-    public function setUpdatedAt(int $updatedAt): self
-    {
-        $this->updatedAt = $updatedAt;
-        return $this;
+        return $this->rawEvent;
     }
 
     public function getKind(): int

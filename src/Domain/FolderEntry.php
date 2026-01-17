@@ -6,66 +6,51 @@ namespace DecentNewsroom\NostrDrive\Domain;
 
 /**
  * Represents an entry within a Folder
- * Contains references to events (either by event ID or addressable coordinate)
+ * Uses coordinate (a-tag) as the canonical reference for addressable events
  */
-final class FolderEntry
+final readonly class FolderEntry
 {
     public function __construct(
-        private string $eventId,
-        private int $kind,
-        private int $position,
-        private ?string $pubkey = null,
-        private ?string $identifier = null
+        private Coordinate $coordinate,
+        private ?string $relayHint = null,
+        private ?string $lastSeenEventId = null,
+        private ?string $nameHint = null
     ) {
     }
 
-    public function getEventId(): string
+    public function getCoordinate(): Coordinate
     {
-        return $this->eventId;
+        return $this->coordinate;
     }
 
-    public function getKind(): int
+    public function getRelayHint(): ?string
     {
-        return $this->kind;
+        return $this->relayHint;
     }
 
-    public function getPosition(): int
+    public function getLastSeenEventId(): ?string
     {
-        return $this->position;
+        return $this->lastSeenEventId;
     }
 
-    public function setPosition(int $position): self
+    public function getNameHint(): ?string
     {
-        $this->position = $position;
-        return $this;
-    }
-
-    public function getPubkey(): ?string
-    {
-        return $this->pubkey;
-    }
-
-    public function getIdentifier(): ?string
-    {
-        return $this->identifier;
+        return $this->nameHint;
     }
 
     /**
-     * Check if this is an addressable event (has coordinate)
+     * Create entry with updated hints (returns new instance due to readonly)
      */
-    public function isAddressable(): bool
-    {
-        return $this->pubkey !== null && $this->identifier !== null;
-    }
-
-    /**
-     * Get the coordinate string (kind:pubkey:d-tag)
-     */
-    public function toCoordinate(): ?string
-    {
-        if (!$this->isAddressable()) {
-            return null;
-        }
-        return "{$this->kind}:{$this->pubkey}:{$this->identifier}";
+    public function withHints(
+        ?string $relayHint = null,
+        ?string $lastSeenEventId = null,
+        ?string $nameHint = null
+    ): self {
+        return new self(
+            $this->coordinate,
+            $relayHint ?? $this->relayHint,
+            $lastSeenEventId ?? $this->lastSeenEventId,
+            $nameHint ?? $this->nameHint
+        );
     }
 }

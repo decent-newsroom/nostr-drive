@@ -5,7 +5,7 @@ declare(strict_types=1);
 namespace DecentNewsroom\NostrDrive\Tests\Service;
 
 use DecentNewsroom\NostrDrive\Contract\EventStoreInterface;
-use DecentNewsroom\NostrDrive\Domain\Address;
+use DecentNewsroom\NostrDrive\Domain\Coordinate;
 use DecentNewsroom\NostrDrive\Exception\NotFoundException;
 use DecentNewsroom\NostrDrive\Exception\ValidationException;
 use DecentNewsroom\NostrDrive\Service\DriveService;
@@ -13,6 +13,8 @@ use PHPUnit\Framework\TestCase;
 
 class DriveServiceTest extends TestCase
 {
+    private const VALID_PUBKEY = '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+
     private EventStoreInterface $eventStore;
     private DriveService $service;
 
@@ -29,30 +31,51 @@ class DriveServiceTest extends TestCase
             ->method('publish')
             ->willReturn(true);
 
-        $address = new Address('pubkey123');
-        $drive = $this->service->create($address, 'my-drive', 'My Drive');
+        $coordinate = new Coordinate(30042, self::VALID_PUBKEY, 'my-drive');
+        $drive = $this->service->create($coordinate, [], 'My Drive', 'Description');
 
-        $this->assertSame('pubkey123', $drive->getAddress()->getPubkey());
-        $this->assertSame('my-drive', $drive->getIdentifier());
-        $this->assertSame('My Drive', $drive->getName());
+        $this->assertTrue($drive->getCoordinate()->equals($coordinate));
+        $this->assertSame('My Drive', $drive->getTitle());
+        $this->assertSame('Description', $drive->getDescription());
     }
 
-    public function testCreateThrowsExceptionForEmptyIdentifier(): void
+    public function testCanCreateDriveWithRoots(): void
     {
-        $this->expectException(ValidationException::class);
-        $this->expectExceptionMessage('Drive identifier cannot be empty');
+        $this->eventStore
+            ->expects($this->once())
+            ->method('publish')
+            ->willReturn(true);
 
-        $address = new Address('pubkey123');
-        $this->service->create($address, '', 'My Drive');
+        $coordinate = new Coordinate(30042, self::VALID_PUBKEY, 'my-drive');
+        $root1 = new Coordinate(30045, self::VALID_PUBKEY, 'themes');
+        $root2 = new Coordinate(30045, self::VALID_PUBKEY, 'magazines');
+
+        $drive = $this->service->create($coordinate, [$root1, $root2], 'My Drive');
+
+        $roots = $drive->getRoots();
+        $this->assertCount(2, $roots);
+        $this->assertTrue($roots[0]->equals($root1));
+        $this->assertTrue($roots[1]->equals($root2));
     }
 
-    public function testCreateThrowsExceptionForEmptyName(): void
+    public function testCreateThrowsExceptionForInvalidKind(): void
     {
         $this->expectException(ValidationException::class);
-        $this->expectExceptionMessage('Drive name cannot be empty');
+        $this->expectExceptionMessage('Drive coordinate must be kind 30042');
 
-        $address = new Address('pubkey123');
-        $this->service->create($address, 'id', '');
+        $invalidCoordinate = new Coordinate(30045, self::VALID_PUBKEY, 'wrong');
+        $this->service->create($invalidCoordinate);
+    }
+
+    public function testCreateThrowsExceptionForInvalidRootKind(): void
+    {
+        $this->expectException(ValidationException::class);
+        $this->expectExceptionMessage('Root folder coordinates must be kind 30045');
+
+        $coordinate = new Coordinate(30042, self::VALID_PUBKEY, 'my-drive');
+        $invalidRoot = new Coordinate(30042, self::VALID_PUBKEY, 'not-folder');
+
+        $this->service->create($coordinate, [$invalidRoot]);
     }
 
     public function testCanGetDrive(): void
@@ -60,25 +83,29 @@ class DriveServiceTest extends TestCase
         $event = [
             'id' => 'event123',
             'kind' => 30042,
-            'pubkey' => 'pubkey123',
+            'pubkey' => self::VALID_PUBKEY,
             'created_at' => 1234567890,
-            'content' => '{}',
+            'content' => '',
             'tags' => [
                 ['d', 'my-drive'],
-                ['name', 'My Drive'],
+                ['title', 'My Drive'],
+                ['description', 'Test drive'],
+                ['a', '30045:' . self::VALID_PUBKEY . ':themes'],
+                ['a', '30045:' . self::VALID_PUBKEY . ':magazines'],
             ],
         ];
 
         $this->eventStore
             ->expects($this->once())
-            ->method('getLatestByAddress')
+            ->method('getLatestByCoordinate')
             ->willReturn($event);
 
-        $address = new Address('pubkey123');
-        $drive = $this->service->get($address, 'my-drive');
+        $coordinate = new Coordinate(30042, self::VALID_PUBKEY, 'my-drive');
+        $drive = $this->service->get($coordinate);
 
-        $this->assertSame('my-drive', $drive->getIdentifier());
-        $this->assertSame('My Drive', $drive->getName());
+        $this->assertSame('My Drive', $drive->getTitle());
+        $this->assertSame('Test drive', $drive->getDescription());
+        $this->assertCount(2, $drive->getRoots());
     }
 
     public function testGetThrowsNotFoundExceptionWhenDriveDoesNotExist(): void
@@ -87,66 +114,100 @@ class DriveServiceTest extends TestCase
 
         $this->eventStore
             ->expects($this->once())
-            ->method('getLatestByAddress')
+            ->method('getLatestByCoordinate')
             ->willReturn(null);
 
-        $address = new Address('pubkey123');
-        $this->service->get($address, 'non-existent');
+        $coordinate = new Coordinate(30042, self::VALID_PUBKEY, 'non-existent');
+        $this->service->get($coordinate);
     }
 
-    public function testCanGetDriveById(): void
+    public function testCanUpdateDrive(): void
     {
         $event = [
             'id' => 'event123',
             'kind' => 30042,
-            'pubkey' => 'pubkey123',
+            'pubkey' => self::VALID_PUBKEY,
             'created_at' => 1234567890,
-            'content' => '{}',
+            'content' => '',
             'tags' => [
                 ['d', 'my-drive'],
-                ['name', 'My Drive'],
+                ['title', 'Old Title'],
             ],
         ];
 
         $this->eventStore
             ->expects($this->once())
-            ->method('getById')
-            ->with('event123')
+            ->method('getLatestByCoordinate')
             ->willReturn($event);
 
-        $drive = $this->service->getById('event123');
-
-        $this->assertSame('event123', $drive->getId());
-        $this->assertSame('my-drive', $drive->getIdentifier());
-    }
-
-    public function testCanUpdateDrive(): void
-    {
         $this->eventStore
-            ->expects($this->exactly(2))
+            ->expects($this->once())
             ->method('publish')
             ->willReturn(true);
 
-        $address = new Address('pubkey123');
-        $drive = $this->service->create($address, 'my-drive', 'Old Name');
+        $coordinate = new Coordinate(30042, self::VALID_PUBKEY, 'my-drive');
+        $drive = $this->service->get($coordinate);
+        $drive->setTitle('New Title');
 
-        $drive->setName('New Name');
         $updatedDrive = $this->service->update($drive);
 
-        $this->assertSame('New Name', $updatedDrive->getName());
+        $this->assertSame('New Title', $updatedDrive->getTitle());
     }
 
-    public function testCanDeleteDrive(): void
+    public function testCanSetRoots(): void
     {
+        $event = [
+            'id' => 'event123',
+            'kind' => 30042,
+            'pubkey' => self::VALID_PUBKEY,
+            'created_at' => 1234567890,
+            'content' => '',
+            'tags' => [
+                ['d', 'my-drive'],
+                ['title', 'My Drive'],
+            ],
+        ];
+
         $this->eventStore
-            ->expects($this->exactly(2))
+            ->expects($this->once())
+            ->method('getLatestByCoordinate')
+            ->willReturn($event);
+
+        $this->eventStore
+            ->expects($this->once())
             ->method('publish')
             ->willReturn(true);
 
-        $address = new Address('pubkey123');
-        $drive = $this->service->create($address, 'my-drive', 'My Drive');
+        $coordinate = new Coordinate(30042, self::VALID_PUBKEY, 'my-drive');
+        $root1 = new Coordinate(30045, self::VALID_PUBKEY, 'themes');
+        $root2 = new Coordinate(30045, self::VALID_PUBKEY, 'magazines');
 
-        $result = $this->service->delete($drive);
+        $drive = $this->service->setRoots($coordinate, [$root1, $root2]);
+
+        $this->assertCount(2, $drive->getRoots());
+    }
+
+    public function testCanArchiveDrive(): void
+    {
+        $this->eventStore
+            ->expects($this->once())
+            ->method('publish')
+            ->with($this->callback(function ($event) {
+                $hasArchiveTag = false;
+                foreach ($event['tags'] as $tag) {
+                    if ($tag[0] === 'status' && $tag[1] === 'archived') {
+                        $hasArchiveTag = true;
+                        break;
+                    }
+                }
+                return $hasArchiveTag;
+            }))
+            ->willReturn(true);
+
+        $coordinate = new Coordinate(30042, self::VALID_PUBKEY, 'my-drive');
+        $drive = new \DecentNewsroom\NostrDrive\Domain\Drive($coordinate);
+
+        $result = $this->service->archive($drive);
 
         $this->assertTrue($result);
     }

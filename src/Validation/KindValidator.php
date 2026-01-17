@@ -15,18 +15,21 @@ final class KindValidator
     /**
      * Allowed event kinds for folder entries
      * 
-     * Note: Drive (30042) and Folder (30045) events are intentionally excluded
-     * to prevent circular references and maintain a clear hierarchy.
-     * 
-     * 30040, 30041 - File events
-     * 30024, 30023 - Long-form content
-     * 31924, 31923, 31922 - App-specific events
+     * 30040 - Index
+     * 30041 - AsciiDoc content
+     * 30024 - Markdown article
+     * 30023 - Markdown draft
+     * 30045 - Folder (allows nesting)
+     * 31924 - Calendar (NIP-52)
+     * 31923 - Time-based calendar event (NIP-52)
+     * 31922 - Date-based calendar event (NIP-52)
      */
     private const ALLOWED_KINDS = [
         30040,
         30041,
         30024,
         30023,
+        30045, // Allow folder nesting
         31924,
         31923,
         31922,

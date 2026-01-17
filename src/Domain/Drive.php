@@ -6,68 +6,110 @@ namespace DecentNewsroom\NostrDrive\Domain;
 
 /**
  * Represents a Drive event (kind:30042)
- * A drive is the root container for organizing files and folders
+ * A drive is the root container that mounts folder roots
  */
 final class Drive
 {
     public const KIND = 30042;
 
-    private ?string $id = null;
+    private ?string $eventId = null;
     private int $createdAt;
-    private int $updatedAt;
 
+    /**
+     * @param Coordinate $coordinate The drive's coordinate (must be kind 30042)
+     * @param Coordinate[] $roots Array of root folder coordinates (kind 30045)
+     * @param string|null $title Drive title
+     * @param string|null $description Drive description
+     * @param array $rawEvent The raw Nostr event
+     */
     public function __construct(
-        private Address $address,
-        private string $identifier,
-        private string $name,
-        private array $tags = []
+        private Coordinate $coordinate,
+        private array $roots = [],
+        private ?string $title = null,
+        private ?string $description = null,
+        private array $rawEvent = []
     ) {
-        $this->createdAt = time();
-        $this->updatedAt = time();
+        if ($coordinate->getKind() !== self::KIND) {
+            throw new \InvalidArgumentException(
+                "Drive coordinate must be kind " . self::KIND . ", got {$coordinate->getKind()}"
+            );
+        }
+
+        // Validate roots are all kind 30045
+        foreach ($roots as $root) {
+            if (!$root instanceof Coordinate) {
+                throw new \InvalidArgumentException('All roots must be Coordinate instances');
+            }
+            if ($root->getKind() !== Folder::KIND) {
+                throw new \InvalidArgumentException(
+                    "Root folder coordinates must be kind " . Folder::KIND . ", got {$root->getKind()}"
+                );
+            }
+        }
+
+        $this->createdAt = $rawEvent['created_at'] ?? time();
     }
 
-    public function getId(): ?string
+    public function getCoordinate(): Coordinate
     {
-        return $this->id;
+        return $this->coordinate;
     }
 
-    public function setId(string $id): self
+    public function getEventId(): ?string
     {
-        $this->id = $id;
+        return $this->eventId;
+    }
+
+    public function setEventId(string $eventId): self
+    {
+        $this->eventId = $eventId;
         return $this;
     }
 
-    public function getAddress(): Address
+    /**
+     * @return Coordinate[]
+     */
+    public function getRoots(): array
     {
-        return $this->address;
+        return $this->roots;
     }
 
-    public function getIdentifier(): string
+    public function setRoots(array $roots): self
     {
-        return $this->identifier;
-    }
-
-    public function getName(): string
-    {
-        return $this->name;
-    }
-
-    public function setName(string $name): self
-    {
-        $this->name = $name;
-        $this->updatedAt = time();
+        // Validate roots are all kind 30045
+        foreach ($roots as $root) {
+            if (!$root instanceof Coordinate) {
+                throw new \InvalidArgumentException('All roots must be Coordinate instances');
+            }
+            if ($root->getKind() !== Folder::KIND) {
+                throw new \InvalidArgumentException(
+                    "Root folder coordinates must be kind " . Folder::KIND . ", got {$root->getKind()}"
+                );
+            }
+        }
+        $this->roots = $roots;
         return $this;
     }
 
-    public function getTags(): array
+    public function getTitle(): ?string
     {
-        return $this->tags;
+        return $this->title;
     }
 
-    public function setTags(array $tags): self
+    public function setTitle(?string $title): self
     {
-        $this->tags = $tags;
-        $this->updatedAt = time();
+        $this->title = $title;
+        return $this;
+    }
+
+    public function getDescription(): ?string
+    {
+        return $this->description;
+    }
+
+    public function setDescription(?string $description): self
+    {
+        $this->description = $description;
         return $this;
     }
 
@@ -82,15 +124,9 @@ final class Drive
         return $this;
     }
 
-    public function getUpdatedAt(): int
+    public function getRawEvent(): array
     {
-        return $this->updatedAt;
-    }
-
-    public function setUpdatedAt(int $updatedAt): self
-    {
-        $this->updatedAt = $updatedAt;
-        return $this;
+        return $this->rawEvent;
     }
 
     public function getKind(): int
