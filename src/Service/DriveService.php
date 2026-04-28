@@ -7,7 +7,10 @@ namespace DecentNewsroom\NostrDrive\Service;
 use DecentNewsroom\NostrDrive\Contract\EventStoreInterface;
 use DecentNewsroom\NostrDrive\Domain\Coordinate;
 use DecentNewsroom\NostrDrive\Domain\Drive;
+use DecentNewsroom\NostrDrive\Domain\Event;
 use DecentNewsroom\NostrDrive\Domain\Folder;
+use DecentNewsroom\NostrDrive\Domain\Meta;
+use DecentNewsroom\NostrDrive\Domain\PublishResult;
 use DecentNewsroom\NostrDrive\Exception\NotFoundException;
 use DecentNewsroom\NostrDrive\Exception\ValidationException;
 
@@ -23,21 +26,19 @@ final class DriveService
     }
 
     /**
-     * Create a new drive
+     * Create a new drive and publish it to the event store
      *
-     * @param Coordinate $coordinate The drive's coordinate (must be kind 30042)
-     * @param Coordinate[] $roots Array of root folder coordinates (kind 30045)
-     * @param string|null $title The drive title
-     * @param string|null $description The drive description
-     * @return Drive The created drive
+     * @param Coordinate    $coordinate The drive's coordinate (must be kind 30042)
+     * @param Coordinate[]  $roots      Array of root folder coordinates (kind 30045)
+     * @param Meta|null     $meta       Optional title/description metadata
+     * @return Event The published event
      * @throws ValidationException If validation fails
      */
     public function create(
         Coordinate $coordinate,
         array $roots = [],
-        ?string $title = null,
-        ?string $description = null
-    ): Drive {
+        ?Meta $meta = null
+    ): Event {
         if ($coordinate->getKind() !== Drive::KIND) {
             throw new ValidationException(
                 'Drive coordinate must be kind ' . Drive::KIND . ', got ' . $coordinate->getKind()
@@ -56,13 +57,8 @@ final class DriveService
             }
         }
 
-        $drive = new Drive($coordinate, $roots, $title, $description);
-
-        // Publish to event store
-        $event = $this->driveToEvent($drive);
-        $this->eventStore->publish($event);
-
-        return $drive;
+        $drive = new Drive($coordinate, $roots, $meta?->title, $meta?->description);
+        return $this->publishDrive($drive);
     }
 
     /**
@@ -90,31 +86,17 @@ final class DriveService
     }
 
     /**
-     * Update an existing drive (replaces the event with same coordinate)
+     * Set root folders for a drive and publish the updated event
      *
-     * @param Drive $drive The drive to update
-     * @return Drive The updated drive
+     * @param Coordinate   $coordinate The drive coordinate
+     * @param Coordinate[] $roots      Array of root folder coordinates
+     * @return Event The published event
      */
-    public function update(Drive $drive): Drive
-    {
-        $event = $this->driveToEvent($drive);
-        $this->eventStore->publish($event);
-
-        return $drive;
-    }
-
-    /**
-     * Set root folders for a drive
-     *
-     * @param Coordinate $coordinate The drive coordinate
-     * @param Coordinate[] $roots Array of root folder coordinates
-     * @return Drive The updated drive
-     */
-    public function setRoots(Coordinate $coordinate, array $roots): Drive
+    public function setRoots(Coordinate $coordinate, array $roots): Event
     {
         $drive = $this->get($coordinate);
         $drive->setRoots($roots);
-        return $this->update($drive);
+        return $this->publishDrive($drive);
     }
 
     /**
@@ -122,23 +104,43 @@ final class DriveService
      * Note: This does not guarantee network deletion
      *
      * @param Drive $drive The drive to archive
-     * @return bool True if successful
+     * @return PublishResult
      */
-    public function archive(Drive $drive): bool
+    public function archive(Drive $drive): PublishResult
     {
         $event = $this->driveToEvent($drive);
-        $event['tags'][] = ['status', 'archived'];
+        $archivedEvent = new Event(
+            kind: $event->kind,
+            pubkey: $event->pubkey,
+            createdAt: $event->createdAt,
+            tags: array_merge($event->tags, [['status', 'archived']]),
+            content: $event->content,
+            id: $event->id,
+            sig: $event->sig
+        );
 
-        return $this->eventStore->publish($event);
+        return $this->eventStore->publish($archivedEvent);
     }
 
     /**
-     * Convert a Drive domain object to an event array
-     *
-     * @param Drive $drive
-     * @return array
+     * Publish a Drive domain object to the event store
      */
-    private function driveToEvent(Drive $drive): array
+    private function publishDrive(Drive $drive): Event
+    {
+        $event = $this->driveToEvent($drive);
+        $result = $this->eventStore->publish($event);
+
+        if (!$result->isSuccess()) {
+            throw new \RuntimeException('Failed to publish drive event: ' . ($result->message ?? ''));
+        }
+
+        return $event;
+    }
+
+    /**
+     * Convert a Drive domain object to an Event DTO
+     */
+    private function driveToEvent(Drive $drive): Event
     {
         $coord = $drive->getCoordinate();
 
@@ -154,35 +156,32 @@ final class DriveService
             $tags[] = ['description', $drive->getDescription()];
         }
 
-        // Add root folder mounts as 'a' tags
+        // Add root folder mounts as 'a' tags (order matters)
         foreach ($drive->getRoots() as $root) {
             $tags[] = ['a', $root->toString()];
         }
 
-        return [
-            'id' => $drive->getEventId(),
-            'kind' => Drive::KIND,
-            'pubkey' => $coord->getPubkey(),
-            'created_at' => $drive->getCreatedAt(),
-            'content' => '',
-            'tags' => $tags,
-        ];
+        return new Event(
+            kind: Drive::KIND,
+            pubkey: $coord->getPubkey(),
+            createdAt: $drive->getCreatedAt(),
+            tags: $tags,
+            content: '',
+            id: $drive->getEventId()
+        );
     }
 
     /**
-     * Convert an event array to a Drive domain object
-     *
-     * @param array $event
-     * @return Drive
+     * Convert an Event DTO to a Drive domain object
      */
-    private function eventToDrive(array $event): Drive
+    private function eventToDrive(Event $event): Drive
     {
         $identifier = '';
         $title = null;
         $description = null;
         $roots = [];
 
-        foreach ($event['tags'] ?? [] as $tag) {
+        foreach ($event->tags as $tag) {
             if ($tag[0] === 'd') {
                 $identifier = $tag[1] ?? '';
             } elseif ($tag[0] === 'title') {
@@ -202,17 +201,15 @@ final class DriveService
             }
         }
 
-        $pubkey = $event['pubkey'] ?? '';
-        $coordinate = new Coordinate(Drive::KIND, $pubkey, $identifier);
+        $coordinate = new Coordinate(Drive::KIND, $event->pubkey, $identifier);
+        $drive = new Drive($coordinate, $roots, $title, $description, $event->toArray());
 
-        $drive = new Drive($coordinate, $roots, $title, $description, $event);
-
-        if (isset($event['id'])) {
-            $drive->setEventId($event['id']);
+        if ($event->id !== null) {
+            $drive->setEventId($event->id);
         }
 
-        if (isset($event['created_at'])) {
-            $drive->setCreatedAt($event['created_at']);
+        if ($event->createdAt > 0) {
+            $drive->setCreatedAt($event->createdAt);
         }
 
         return $drive;

@@ -26,13 +26,12 @@ The library must support full CRUD semantics for drives and folders using Nostr�
 * No UI (web screens). Optional CLI belongs in a separate bundle.
 * No relay networking details in core (no websocket loops, no retry strategy).
 * No guarantee of global deletion (relays may ignore NIP-09).
-* No Ghost theme support.
 
 ---
 
 ## 2. Terminology
 
-* **Address (coordinate):** `"<kind>:<pubkey>:<d>"` string identifying an addressable event.
+* **Coordinate:** `"<kind>:<pubkey>:<d>"` string identifying an addressable event.
 * **Drive:** `kind:30042`, mounts root folders.
 * **Folder:** `kind:30045`, contains child references.
 * **Node:** any addressable event that may be contained in a folder (folder or “file-kind” content).
@@ -182,17 +181,17 @@ The library does not talk to relays directly. It requires an adapter:
 
 ```php
 interface EventStoreInterface {
-    /** Fetch latest replaceable event for an address (kind,pubkey,d). */
-    public function getLatestByAddress(Address $address): ?NostrEvent;
+    /** Fetch latest replaceable event for a coordinate (kind,pubkey,d). */
+    public function getLatestByCoordinate(Coordinate $coordinate): ?Event;
 
     /** Fetch a concrete event by id (optional, for hints/verification). */
-    public function getById(string $eventId): ?NostrEvent;
+    public function getById(string $eventId): ?Event;
 
-    /** Batch fetch latest for multiple addresses. */
-    public function getLatestByAddresses(array $addresses): array; // Address => ?NostrEvent
+    /** Batch fetch latest for multiple coordinates. */
+    public function getLatestByCoordinates(array $coordinates): array; // array<string, Event>
 
-    /** Publish an event (already signed). Returns event id or relay receipt info. */
-    public function publish(NostrEvent $event): PublishResult;
+    /** Publish an event (already signed). */
+    public function publish(Event $event): PublishResult;
 }
 ```
 
@@ -221,34 +220,34 @@ If present, used to cache read operations (directory hydration, mount tables). U
 
 ## 6. Domain models
 
-### 6.1 Address
+### 6.1 Coordinate
 
 Value object representing `kind`, `pubkey`, `d`.
 
-* `Address::parse("30045:...:themes")`
-* `Address::toString()` canonicalizes formatting.
+* `Coordinate::parse("30045:...:themes")`
+* `Coordinate::toString()` canonicalizes formatting.
 
 ### 6.2 Drive
 
 DTO representing:
 
-* `address: Address` (kind 30042)
+* `coordinate: Coordinate` (kind 30042)
 * `title?`, `description?`
-* `roots: Address[]` (kind 30045 addresses)
-* `rawEvent: NostrEvent`
+* `roots: Coordinate[]` (kind 30045 coordinates)
+* `rawEvent: Event`
 
 ### 6.3 Folder
 
 DTO representing:
 
-* `address: Address` (kind 30045)
+* `coordinate: Coordinate` (kind 30045)
 * `title?`, `description?`
 * `entries: FolderEntry[]`
-* `rawEvent: NostrEvent`
+* `rawEvent: Event`
 
 ### 6.4 FolderEntry
 
-* `address: Address` (child)
+* `coordinate: Coordinate` (child)
 * `relayHint?: string`
 * `lastSeenEventId?: string`
 * `nameHint?: string`
@@ -264,7 +263,7 @@ DTO representing:
 **Input**
 
 * `driveId (d tag)`, optional title/description
-* `rootFolders: Address[]` (kind 30045 only)
+* `rootFolders: Coordinate[]` (kind 30045 only)
 
 **Behavior**
 
@@ -274,17 +273,17 @@ DTO representing:
 
 **Output**
 
-* Either signed `NostrEvent` (if using SignerInterface) or unsigned array.
+* Published `Event` (if signer + adapter are configured) or unsigned event payload for integration-layer signing.
 
 #### Read drive
 
 **Input**
 
-* `driveAddress (30042:pubkey:d)`
+* `driveCoordinate (30042:pubkey:d)`
 
 **Behavior**
 
-* `EventStore.getLatestByAddress`
+* `EventStore.getLatestByCoordinate`
 * Validate invariants
 * Parse roots from `a` tags where kind=30045
 * Optionally hydrate roots (fetch folder metadata) via batch call
@@ -362,7 +361,7 @@ DTO representing:
 **Library meaning**
 
 * Unlink it from its parent (if parent known) is outside “folder-only” scope unless you maintain backlinks.
-* Provide helper `removeEntry(parentFolder, childFolderAddress)` at the membership-op layer.
+* Provide helper `remove(parentFolder, childFolderCoordinate)` at the membership-op layer.
 
 ---
 
@@ -370,22 +369,22 @@ DTO representing:
 
 These are the “filesystem primitives.” They operate by creating updated `30045` events.
 
-#### addEntry(folder, childEntry)
+#### add(folder, childEntry)
 
 * Validate child kind is allowed
 * Add `a` tag; if already present, no-op unless “replace hints” requested
 
-#### removeEntry(folder, childAddress)
+#### remove(folder, childCoordinate)
 
 * Remove all membership tags that match that address
 
-#### moveEntry(srcFolder, dstFolder, childAddress)
+#### moveEntry(srcFolder, dstFolder, childCoordinate)
 
-* removeEntry(src)
-* addEntry(dst)
+* remove(src)
+* add(dst)
 * Publish both updated folders (order of operations is integration-defined)
 
-#### reorderEntries(folder, orderedChildAddresses)
+#### reorder(folder, orderedChildCoordinates)
 
 * Ensure set matches current entries (or specify policy: partial reorder allowed)
 * Emit updated event with tags ordered accordingly
@@ -401,7 +400,7 @@ These are the “filesystem primitives.” They operate by creating updated `300
 On any operation that adds/sets entries, enforce:
 
 * Child kind ∈ allowlist
-* Child address must be parseable and include `d`
+* Child coordinate must be parseable and include `d`
 * If child kind is `30045`, it is a folder (allowed nesting)
 
 Library must expose configuration:
@@ -452,7 +451,7 @@ To support “filesystem-like organization,” provide an optional path API on t
 
 ### 9.2 Required path functions (optional module)
 
-* `resolvePath(Drive, "/themes/default") -> Address`
+* `resolvePath(Drive, "/themes/default") -> Coordinate`
 * `listPath(Drive, "/themes") -> FolderEntry[]`
 
 This requires a traversal strategy:
@@ -476,7 +475,7 @@ This requires a traversal strategy:
 
     * `d` tag required
     * `content == ""`
-    * membership tags `a` parse to valid addresses
+    * membership tags `a` parse to valid coordinates
     * child kind allowed
 
 ### 10.2 Exceptions (recommended)
@@ -497,8 +496,8 @@ Library should be neutral but allow host enforcement.
 
 ```php
 interface AuthorizationPolicyInterface {
-    public function canWriteDrive(string $actorPubkey, Address $drive): bool;
-    public function canWriteFolder(string $actorPubkey, Address $folder): bool;
+    public function canWriteDrive(string $actorPubkey, Coordinate $drive): bool;
+    public function canWriteFolder(string $actorPubkey, Coordinate $folder): bool;
 }
 ```
 
@@ -537,7 +536,7 @@ Provide JSON fixtures for:
 
 ### 13.2 Unit tests (required)
 
-* address parsing/formatting roundtrip
+* coordinate parsing/formatting roundtrip
 * drive parse/build
 * folder parse/build
 * add/remove/move/reorder
@@ -578,7 +577,7 @@ Unfold should rely on the library’s path/traversal module (if implemented), or
 ### 15.1 SemVer
 
 * v0.x: API may change quickly
-* v1.0: freeze core interfaces (`EventStoreInterface`, `DriveService`, `FolderService`, `Address`)
+* v1.0: freeze core interfaces (`EventStoreInterface`, `DriveService`, `FolderService`, `Coordinate`)
 
 ### 15.2 Planned extensions (not in MVP)
 

@@ -6,8 +6,11 @@ namespace DecentNewsroom\NostrDrive\Service;
 
 use DecentNewsroom\NostrDrive\Contract\EventStoreInterface;
 use DecentNewsroom\NostrDrive\Domain\Coordinate;
+use DecentNewsroom\NostrDrive\Domain\Event;
 use DecentNewsroom\NostrDrive\Domain\Folder;
 use DecentNewsroom\NostrDrive\Domain\FolderEntry;
+use DecentNewsroom\NostrDrive\Domain\Meta;
+use DecentNewsroom\NostrDrive\Domain\PublishResult;
 use DecentNewsroom\NostrDrive\Exception\NotFoundException;
 use DecentNewsroom\NostrDrive\Exception\ValidationException;
 use DecentNewsroom\NostrDrive\Validation\KindValidator;
@@ -24,21 +27,19 @@ final class FolderService
     }
 
     /**
-     * Create a new folder
+     * Create a new folder and publish it to the event store
      *
-     * @param Coordinate $coordinate The folder's coordinate (must be kind 30045)
-     * @param FolderEntry[] $entries Initial entries
-     * @param string|null $title The folder title
-     * @param string|null $description The folder description
-     * @return Folder The created folder
+     * @param Coordinate   $coordinate The folder's coordinate (must be kind 30045)
+     * @param FolderEntry[] $entries   Initial entries
+     * @param Meta|null    $meta       Optional title/description metadata
+     * @return Event The published event
      * @throws ValidationException If validation fails
      */
     public function create(
         Coordinate $coordinate,
         array $entries = [],
-        ?string $title = null,
-        ?string $description = null
-    ): Folder {
+        ?Meta $meta = null
+    ): Event {
         if ($coordinate->getKind() !== Folder::KIND) {
             throw new ValidationException(
                 'Folder coordinate must be kind ' . Folder::KIND . ', got ' . $coordinate->getKind()
@@ -53,13 +54,8 @@ final class FolderService
             KindValidator::validate($entry->getCoordinate()->getKind());
         }
 
-        $folder = new Folder($coordinate, $entries, $title, $description);
-
-        // Publish to event store
-        $event = $this->folderToEvent($folder);
-        $this->eventStore->publish($event);
-
-        return $folder;
+        $folder = new Folder($coordinate, $entries, $meta?->title, $meta?->description);
+        return $this->publishFolder($folder);
     }
 
     /**
@@ -87,28 +83,14 @@ final class FolderService
     }
 
     /**
-     * Update an existing folder (replaces the event with same coordinate)
+     * Add an entry to a folder and publish the updated event
      *
-     * @param Folder $folder The folder to update
-     * @return Folder The updated folder
-     */
-    public function update(Folder $folder): Folder
-    {
-        $event = $this->folderToEvent($folder);
-        $this->eventStore->publish($event);
-
-        return $folder;
-    }
-
-    /**
-     * Add an entry to a folder
-     *
-     * @param Coordinate $folderCoordinate The folder coordinate
-     * @param FolderEntry $entry The entry to add
-     * @return Folder The updated folder
+     * @param Coordinate  $folderCoordinate The folder coordinate
+     * @param FolderEntry $entry            The entry to add
+     * @return Event The published event
      * @throws ValidationException If kind is not allowed or entry already exists
      */
-    public function addEntry(Coordinate $folderCoordinate, FolderEntry $entry): Folder
+    public function add(Coordinate $folderCoordinate, FolderEntry $entry): Event
     {
         // Validate the kind is allowed
         KindValidator::validate($entry->getCoordinate()->getKind());
@@ -123,80 +105,32 @@ final class FolderService
         }
 
         $folder->addEntry($entry);
-
-        // Publish updated folder
-        return $this->update($folder);
+        return $this->publishFolder($folder);
     }
 
     /**
-     * Remove an entry from a folder
+     * Remove an entry from a folder and publish the updated event
      *
      * @param Coordinate $folderCoordinate The folder coordinate
-     * @param Coordinate $entryCoordinate The coordinate of the entry to remove
-     * @return Folder The updated folder
+     * @param Coordinate $entryCoordinate  The coordinate of the entry to remove
+     * @return Event The published event
      */
-    public function removeEntry(Coordinate $folderCoordinate, Coordinate $entryCoordinate): Folder
+    public function remove(Coordinate $folderCoordinate, Coordinate $entryCoordinate): Event
     {
         $folder = $this->get($folderCoordinate);
         $folder->removeEntry($entryCoordinate);
-
-        // Publish updated folder
-        return $this->update($folder);
+        return $this->publishFolder($folder);
     }
 
     /**
-     * Move an entry from one folder to another
+     * Reorder entries in a folder and publish the updated event
      *
-     * @param Coordinate $srcFolderCoordinate Source folder coordinate
-     * @param Coordinate $dstFolderCoordinate Destination folder coordinate
-     * @param Coordinate $entryCoordinate The coordinate of the entry to move
-     * @return array{src: Folder, dst: Folder} Both updated folders
-     */
-    public function moveEntry(
-        Coordinate $srcFolderCoordinate,
-        Coordinate $dstFolderCoordinate,
-        Coordinate $entryCoordinate
-    ): array {
-        $srcFolder = $this->get($srcFolderCoordinate);
-        $dstFolder = $this->get($dstFolderCoordinate);
-
-        // Find entry in source
-        $entryToMove = null;
-        foreach ($srcFolder->getEntries() as $entry) {
-            if ($entry->getCoordinate()->equals($entryCoordinate)) {
-                $entryToMove = $entry;
-                break;
-            }
-        }
-
-        if ($entryToMove === null) {
-            throw new NotFoundException(
-                "Entry with coordinate {$entryCoordinate} not found in source folder"
-            );
-        }
-
-        // Remove from source
-        $srcFolder->removeEntry($entryCoordinate);
-
-        // Add to destination
-        $dstFolder->addEntry($entryToMove);
-
-        // Publish both folders
-        $srcFolder = $this->update($srcFolder);
-        $dstFolder = $this->update($dstFolder);
-
-        return ['src' => $srcFolder, 'dst' => $dstFolder];
-    }
-
-    /**
-     * Reorder entries in a folder
-     *
-     * @param Coordinate $folderCoordinate The folder coordinate
-     * @param Coordinate[] $orderedCoordinates Array of coordinates in the desired order
-     * @return Folder The updated folder
+     * @param Coordinate   $folderCoordinate    The folder coordinate
+     * @param Coordinate[] $orderedCoordinates  Coordinates in the desired order
+     * @return Event The published event
      * @throws ValidationException If coordinates don't match folder entries
      */
-    public function reorderEntries(Coordinate $folderCoordinate, array $orderedCoordinates): Folder
+    public function reorder(Coordinate $folderCoordinate, array $orderedCoordinates): Event
     {
         $folder = $this->get($folderCoordinate);
         $entries = $folder->getEntries();
@@ -232,19 +166,58 @@ final class FolderService
         }
 
         $folder->setEntries($reorderedEntries);
-
-        // Publish updated folder
-        return $this->update($folder);
+        return $this->publishFolder($folder);
     }
 
     /**
-     * Set entries for a folder (replaces all entries)
+     * Move an entry from one folder to another
      *
-     * @param Coordinate $folderCoordinate The folder coordinate
-     * @param FolderEntry[] $entries The new entries
-     * @return Folder The updated folder
+     * @param Coordinate $srcFolderCoordinate  Source folder coordinate
+     * @param Coordinate $dstFolderCoordinate  Destination folder coordinate
+     * @param Coordinate $entryCoordinate      The coordinate of the entry to move
+     * @return array{src: Event, dst: Event} Published events for both folders
      */
-    public function setEntries(Coordinate $folderCoordinate, array $entries): Folder
+    public function moveEntry(
+        Coordinate $srcFolderCoordinate,
+        Coordinate $dstFolderCoordinate,
+        Coordinate $entryCoordinate
+    ): array {
+        $srcFolder = $this->get($srcFolderCoordinate);
+        $dstFolder = $this->get($dstFolderCoordinate);
+
+        // Find entry in source
+        $entryToMove = null;
+        foreach ($srcFolder->getEntries() as $entry) {
+            if ($entry->getCoordinate()->equals($entryCoordinate)) {
+                $entryToMove = $entry;
+                break;
+            }
+        }
+
+        if ($entryToMove === null) {
+            throw new NotFoundException(
+                "Entry with coordinate {$entryCoordinate} not found in source folder"
+            );
+        }
+
+        // Remove from source, add to destination
+        $srcFolder->removeEntry($entryCoordinate);
+        $dstFolder->addEntry($entryToMove);
+
+        return [
+            'src' => $this->publishFolder($srcFolder),
+            'dst' => $this->publishFolder($dstFolder),
+        ];
+    }
+
+    /**
+     * Set entries for a folder (replaces all entries) and publish the updated event
+     *
+     * @param Coordinate   $folderCoordinate The folder coordinate
+     * @param FolderEntry[] $entries         The new entries
+     * @return Event The published event
+     */
+    public function setEntries(Coordinate $folderCoordinate, array $entries): Event
     {
         // Validate entry kinds
         foreach ($entries as $entry) {
@@ -256,33 +229,54 @@ final class FolderService
 
         $folder = $this->get($folderCoordinate);
         $folder->setEntries($entries);
-
-        // Publish updated folder
-        return $this->update($folder);
+        return $this->publishFolder($folder);
     }
 
     /**
      * Archive a folder (sets status to archived)
-     * Note: This does not guarantee network deletion
+     * Note: This does not guarantee network deletion — unlink from parent folder first
      *
      * @param Folder $folder The folder to archive
-     * @return bool True if successful
+     * @return PublishResult
      */
-    public function archive(Folder $folder): bool
+    public function archive(Folder $folder): PublishResult
     {
         $event = $this->folderToEvent($folder);
-        $event['tags'][] = ['status', 'archived'];
+        $archivedEvent = new Event(
+            kind: $event->kind,
+            pubkey: $event->pubkey,
+            createdAt: $event->createdAt,
+            tags: array_merge($event->tags, [['status', 'archived']]),
+            content: $event->content,
+            id: $event->id,
+            sig: $event->sig
+        );
 
-        return $this->eventStore->publish($event);
+        return $this->eventStore->publish($archivedEvent);
     }
 
     /**
-     * Convert a Folder domain object to an event array
-     *
-     * @param Folder $folder
-     * @return array
+     * Publish a Folder domain object to the event store
      */
-    private function folderToEvent(Folder $folder): array
+    private function publishFolder(Folder $folder): Event
+    {
+        $event = $this->folderToEvent($folder);
+        $result = $this->eventStore->publish($event);
+
+        if (!$result->isSuccess()) {
+            throw new \RuntimeException('Failed to publish folder event: ' . ($result->message ?? ''));
+        }
+
+        return $event;
+    }
+
+    /**
+     * Convert a Folder domain object to an Event DTO
+     * Membership uses `a` tags only (coordinate-first, order = display order)
+     * Tag format: ["a", "kind:pubkey:d", "relay-hint", "last-event-id", "name-hint"]
+     * Trailing optional fields are omitted when empty
+     */
+    private function folderToEvent(Folder $folder): Event
     {
         $coord = $folder->getCoordinate();
 
@@ -298,55 +292,51 @@ final class FolderService
             $tags[] = ['description', $folder->getDescription()];
         }
 
-        // Add membership tags as 'a' tags (order matters)
+        // Add membership tags as 'a' tags (order = display order, no explicit position field)
         foreach ($folder->getEntries() as $entry) {
             $aTag = ['a', $entry->getCoordinate()->toString()];
 
-            if ($entry->getRelayHint() !== null) {
-                $aTag[] = $entry->getRelayHint();
-            } else {
-                $aTag[] = '';
-            }
+            $relayHint = $entry->getRelayHint() ?? '';
+            $lastSeenId = $entry->getLastSeenEventId() ?? '';
+            $nameHint = $entry->getNameHint();
 
-            // Optional: add last seen event ID as hint
-            if ($entry->getLastSeenEventId() !== null) {
-                $aTag[] = $entry->getLastSeenEventId();
-            } else {
-                $aTag[] = '';
-            }
-
-            // Optional: add name hint
-            if ($entry->getNameHint() !== null) {
-                $aTag[] = $entry->getNameHint();
+            // Only append optional fields when they carry information
+            if ($nameHint !== null) {
+                // Must include relay-hint and last-event-id positions even if empty
+                $aTag[] = $relayHint;
+                $aTag[] = $lastSeenId;
+                $aTag[] = $nameHint;
+            } elseif ($lastSeenId !== '') {
+                $aTag[] = $relayHint;
+                $aTag[] = $lastSeenId;
+            } elseif ($relayHint !== '') {
+                $aTag[] = $relayHint;
             }
 
             $tags[] = $aTag;
         }
 
-        return [
-            'id' => $folder->getEventId(),
-            'kind' => Folder::KIND,
-            'pubkey' => $coord->getPubkey(),
-            'created_at' => $folder->getCreatedAt(),
-            'content' => '',
-            'tags' => $tags,
-        ];
+        return new Event(
+            kind: Folder::KIND,
+            pubkey: $coord->getPubkey(),
+            createdAt: $folder->getCreatedAt(),
+            tags: $tags,
+            content: '',
+            id: $folder->getEventId()
+        );
     }
 
     /**
-     * Convert an event array to a Folder domain object
-     *
-     * @param array $event
-     * @return Folder
+     * Convert an Event DTO to a Folder domain object
      */
-    private function eventToFolder(array $event): Folder
+    private function eventToFolder(Event $event): Folder
     {
         $identifier = '';
         $title = null;
         $description = null;
         $entries = [];
 
-        foreach ($event['tags'] ?? [] as $tag) {
+        foreach ($event->tags as $tag) {
             if ($tag[0] === 'd') {
                 $identifier = $tag[1] ?? '';
             } elseif ($tag[0] === 'title') {
@@ -380,17 +370,15 @@ final class FolderService
             }
         }
 
-        $pubkey = $event['pubkey'] ?? '';
-        $coordinate = new Coordinate(Folder::KIND, $pubkey, $identifier);
+        $coordinate = new Coordinate(Folder::KIND, $event->pubkey, $identifier);
+        $folder = new Folder($coordinate, $entries, $title, $description, $event->toArray());
 
-        $folder = new Folder($coordinate, $entries, $title, $description, $event);
-
-        if (isset($event['id'])) {
-            $folder->setEventId($event['id']);
+        if ($event->id !== null) {
+            $folder->setEventId($event->id);
         }
 
-        if (isset($event['created_at'])) {
-            $folder->setCreatedAt($event['created_at']);
+        if ($event->createdAt > 0) {
+            $folder->setCreatedAt($event->createdAt);
         }
 
         return $folder;

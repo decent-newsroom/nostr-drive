@@ -6,7 +6,11 @@ namespace DecentNewsroom\NostrDrive\Tests\Service;
 
 use DecentNewsroom\NostrDrive\Contract\EventStoreInterface;
 use DecentNewsroom\NostrDrive\Domain\Coordinate;
+use DecentNewsroom\NostrDrive\Domain\Event;
+use DecentNewsroom\NostrDrive\Domain\Folder;
 use DecentNewsroom\NostrDrive\Domain\FolderEntry;
+use DecentNewsroom\NostrDrive\Domain\Meta;
+use DecentNewsroom\NostrDrive\Domain\PublishResult;
 use DecentNewsroom\NostrDrive\Exception\InvalidKindException;
 use DecentNewsroom\NostrDrive\Exception\NotFoundException;
 use DecentNewsroom\NostrDrive\Exception\ValidationException;
@@ -26,19 +30,25 @@ class FolderServiceTest extends TestCase
         $this->service = new FolderService($this->eventStore);
     }
 
+    // -------------------------------------------------------------------------
+    // create()
+    // -------------------------------------------------------------------------
+
     public function testCanCreateFolder(): void
     {
         $this->eventStore
             ->expects($this->once())
             ->method('publish')
-            ->willReturn(true);
+            ->willReturn(PublishResult::ok());
 
         $coordinate = new Coordinate(30045, self::VALID_PUBKEY, 'my-folder');
-        $folder = $this->service->create($coordinate, [], 'My Folder', 'Description');
+        $event = $this->service->create($coordinate, [], new Meta('My Folder', 'Description'));
 
-        $this->assertTrue($folder->getCoordinate()->equals($coordinate));
-        $this->assertSame('My Folder', $folder->getTitle());
-        $this->assertSame('Description', $folder->getDescription());
+        $this->assertSame(30045, $event->kind);
+        $this->assertSame(self::VALID_PUBKEY, $event->pubkey);
+        $this->assertSame('my-folder', $event->getTagValue('d'));
+        $this->assertSame('My Folder', $event->getTagValue('title'));
+        $this->assertSame('Description', $event->getTagValue('description'));
     }
 
     public function testCanCreateFolderWithEntries(): void
@@ -46,15 +56,19 @@ class FolderServiceTest extends TestCase
         $this->eventStore
             ->expects($this->once())
             ->method('publish')
-            ->willReturn(true);
+            ->willReturn(PublishResult::ok());
 
         $coordinate = new Coordinate(30045, self::VALID_PUBKEY, 'my-folder');
         $entry1 = new FolderEntry(new Coordinate(30040, self::VALID_PUBKEY, 'file1'));
         $entry2 = new FolderEntry(new Coordinate(30041, self::VALID_PUBKEY, 'file2'));
 
-        $folder = $this->service->create($coordinate, [$entry1, $entry2], 'My Folder');
+        $event = $this->service->create($coordinate, [$entry1, $entry2], new Meta('My Folder'));
 
-        $this->assertCount(2, $folder->getEntries());
+        // Assert `a` tags for both entries
+        $aTags = $event->getTagValues('a');
+        $this->assertCount(2, $aTags);
+        $this->assertSame($entry1->getCoordinate()->toString(), $aTags[0][1]);
+        $this->assertSame($entry2->getCoordinate()->toString(), $aTags[1][1]);
     }
 
     public function testCreateThrowsExceptionForInvalidKind(): void
@@ -76,9 +90,13 @@ class FolderServiceTest extends TestCase
         $this->service->create($coordinate, [$invalidEntry]);
     }
 
+    // -------------------------------------------------------------------------
+    // get()
+    // -------------------------------------------------------------------------
+
     public function testCanGetFolder(): void
     {
-        $event = [
+        $rawEvent = [
             'id' => 'event123',
             'kind' => 30045,
             'pubkey' => self::VALID_PUBKEY,
@@ -96,7 +114,7 @@ class FolderServiceTest extends TestCase
         $this->eventStore
             ->expects($this->once())
             ->method('getLatestByCoordinate')
-            ->willReturn($event);
+            ->willReturn(Event::fromArray($rawEvent));
 
         $coordinate = new Coordinate(30045, self::VALID_PUBKEY, 'my-folder');
         $folder = $this->service->get($coordinate);
@@ -108,6 +126,7 @@ class FolderServiceTest extends TestCase
         $entries = $folder->getEntries();
         $this->assertSame('wss://relay.example', $entries[0]->getRelayHint());
         $this->assertSame('File 2', $entries[1]->getNameHint());
+        $this->assertSame('event_hint', $entries[1]->getLastSeenEventId());
     }
 
     public function testGetThrowsNotFoundExceptionWhenFolderDoesNotExist(): void
@@ -123,9 +142,13 @@ class FolderServiceTest extends TestCase
         $this->service->get($coordinate);
     }
 
+    // -------------------------------------------------------------------------
+    // add()
+    // -------------------------------------------------------------------------
+
     public function testCanAddEntryToFolder(): void
     {
-        $event = [
+        $rawEvent = [
             'id' => 'event123',
             'kind' => 30045,
             'pubkey' => self::VALID_PUBKEY,
@@ -140,29 +163,33 @@ class FolderServiceTest extends TestCase
         $this->eventStore
             ->expects($this->once())
             ->method('getLatestByCoordinate')
-            ->willReturn($event);
+            ->willReturn(Event::fromArray($rawEvent));
 
         $this->eventStore
             ->expects($this->once())
             ->method('publish')
-            ->willReturn(true);
+            ->willReturn(PublishResult::ok());
 
         $folderCoord = new Coordinate(30045, self::VALID_PUBKEY, 'my-folder');
-        $entryCoord = new Coordinate(30040, self::VALID_PUBKEY, 'file1');
-        $entry = new FolderEntry($entryCoord, 'wss://relay.example', null, 'File 1');
+        $entryCoord  = new Coordinate(30040, self::VALID_PUBKEY, 'file1');
+        $entry       = new FolderEntry($entryCoord, 'wss://relay.example', null, 'File 1');
 
-        $folder = $this->service->addEntry($folderCoord, $entry);
+        $event = $this->service->add($folderCoord, $entry);
 
-        $entries = $folder->getEntries();
-        $this->assertCount(1, $entries);
-        $this->assertTrue($entries[0]->getCoordinate()->equals($entryCoord));
+        // Assert the published event has the correct `a` tag
+        $aTags = $event->getTagValues('a');
+        $this->assertCount(1, $aTags);
+        $this->assertSame($entryCoord->toString(), $aTags[0][1]);
+        $this->assertSame('wss://relay.example', $aTags[0][2]);
+        $this->assertSame('', $aTags[0][3]);   // empty last-event-id position
+        $this->assertSame('File 1', $aTags[0][4]);
     }
 
-    public function testAddEntryThrowsExceptionForDuplicate(): void
+    public function testAddThrowsExceptionForDuplicate(): void
     {
         $entryCoord = new Coordinate(30040, self::VALID_PUBKEY, 'file1');
 
-        $event = [
+        $rawEvent = [
             'id' => 'event123',
             'kind' => 30045,
             'pubkey' => self::VALID_PUBKEY,
@@ -181,19 +208,21 @@ class FolderServiceTest extends TestCase
         $this->eventStore
             ->expects($this->once())
             ->method('getLatestByCoordinate')
-            ->willReturn($event);
+            ->willReturn(Event::fromArray($rawEvent));
 
         $folderCoord = new Coordinate(30045, self::VALID_PUBKEY, 'my-folder');
-        $entry = new FolderEntry($entryCoord);
-
-        $this->service->addEntry($folderCoord, $entry);
+        $this->service->add($folderCoord, new FolderEntry($entryCoord));
     }
+
+    // -------------------------------------------------------------------------
+    // remove()
+    // -------------------------------------------------------------------------
 
     public function testCanRemoveEntryFromFolder(): void
     {
         $entryCoord = new Coordinate(30040, self::VALID_PUBKEY, 'file1');
 
-        $event = [
+        $rawEvent = [
             'id' => 'event123',
             'kind' => 30045,
             'pubkey' => self::VALID_PUBKEY,
@@ -209,18 +238,128 @@ class FolderServiceTest extends TestCase
         $this->eventStore
             ->expects($this->once())
             ->method('getLatestByCoordinate')
-            ->willReturn($event);
+            ->willReturn(Event::fromArray($rawEvent));
 
         $this->eventStore
             ->expects($this->once())
             ->method('publish')
-            ->willReturn(true);
+            ->willReturn(PublishResult::ok());
 
         $folderCoord = new Coordinate(30045, self::VALID_PUBKEY, 'my-folder');
-        $folder = $this->service->removeEntry($folderCoord, $entryCoord);
+        $event = $this->service->remove($folderCoord, $entryCoord);
 
-        $this->assertCount(0, $folder->getEntries());
+        // The published event must have no `a` tags
+        $this->assertCount(0, $event->getTagValues('a'));
     }
+
+    public function testRemoveProducesCorrectTagArray(): void
+    {
+        $coord1 = new Coordinate(30040, self::VALID_PUBKEY, 'file1');
+        $coord2 = new Coordinate(30041, self::VALID_PUBKEY, 'file2');
+
+        $rawEvent = [
+            'id' => 'event123',
+            'kind' => 30045,
+            'pubkey' => self::VALID_PUBKEY,
+            'created_at' => 1234567890,
+            'content' => '',
+            'tags' => [
+                ['d', 'my-folder'],
+                ['a', $coord1->toString()],
+                ['a', $coord2->toString()],
+            ],
+        ];
+
+        $this->eventStore->method('getLatestByCoordinate')->willReturn(Event::fromArray($rawEvent));
+        $this->eventStore->method('publish')->willReturn(PublishResult::ok());
+
+        $event = $this->service->remove(
+            new Coordinate(30045, self::VALID_PUBKEY, 'my-folder'),
+            $coord1
+        );
+
+        $aTags = $event->getTagValues('a');
+        $this->assertCount(1, $aTags);
+        $this->assertSame($coord2->toString(), $aTags[0][1]);
+    }
+
+    // -------------------------------------------------------------------------
+    // reorder()
+    // -------------------------------------------------------------------------
+
+    public function testCanReorderEntries(): void
+    {
+        $coord1 = new Coordinate(30040, self::VALID_PUBKEY, 'file1');
+        $coord2 = new Coordinate(30041, self::VALID_PUBKEY, 'file2');
+
+        $rawEvent = [
+            'id' => 'event123',
+            'kind' => 30045,
+            'pubkey' => self::VALID_PUBKEY,
+            'created_at' => 1234567890,
+            'content' => '',
+            'tags' => [
+                ['d', 'my-folder'],
+                ['title', 'My Folder'],
+                ['a', $coord1->toString()],
+                ['a', $coord2->toString()],
+            ],
+        ];
+
+        $this->eventStore
+            ->expects($this->once())
+            ->method('getLatestByCoordinate')
+            ->willReturn(Event::fromArray($rawEvent));
+
+        $this->eventStore
+            ->expects($this->once())
+            ->method('publish')
+            ->willReturn(PublishResult::ok());
+
+        $folderCoord = new Coordinate(30045, self::VALID_PUBKEY, 'my-folder');
+        $event = $this->service->reorder($folderCoord, [$coord2, $coord1]);
+
+        // Assert `a` tags are in the new order
+        $aTags = $event->getTagValues('a');
+        $this->assertCount(2, $aTags);
+        $this->assertSame($coord2->toString(), $aTags[0][1]);
+        $this->assertSame($coord1->toString(), $aTags[1][1]);
+    }
+
+    public function testReorderThrowsExceptionForMissingCoordinate(): void
+    {
+        $coord1 = new Coordinate(30040, self::VALID_PUBKEY, 'file1');
+        $coord2 = new Coordinate(30041, self::VALID_PUBKEY, 'file2');
+        $missingCoord = new Coordinate(30040, self::VALID_PUBKEY, 'missing');
+
+        $rawEvent = [
+            'id' => 'event123',
+            'kind' => 30045,
+            'pubkey' => self::VALID_PUBKEY,
+            'created_at' => 1234567890,
+            'content' => '',
+            'tags' => [
+                ['d', 'my-folder'],
+                ['a', $coord1->toString()],
+                ['a', $coord2->toString()],
+            ],
+        ];
+
+        $this->expectException(ValidationException::class);
+        $this->expectExceptionMessage('not found in folder');
+
+        $this->eventStore
+            ->expects($this->once())
+            ->method('getLatestByCoordinate')
+            ->willReturn(Event::fromArray($rawEvent));
+
+        $folderCoord = new Coordinate(30045, self::VALID_PUBKEY, 'my-folder');
+        $this->service->reorder($folderCoord, [$missingCoord, $coord1]);
+    }
+
+    // -------------------------------------------------------------------------
+    // moveEntry()
+    // -------------------------------------------------------------------------
 
     public function testCanMoveEntry(): void
     {
@@ -234,7 +373,6 @@ class FolderServiceTest extends TestCase
             'content' => '',
             'tags' => [
                 ['d', 'src-folder'],
-                ['title', 'Source'],
                 ['a', $entryCoord->toString()],
             ],
         ];
@@ -247,101 +385,40 @@ class FolderServiceTest extends TestCase
             'content' => '',
             'tags' => [
                 ['d', 'dst-folder'],
-                ['title', 'Destination'],
             ],
         ];
 
         $this->eventStore
             ->expects($this->exactly(2))
             ->method('getLatestByCoordinate')
-            ->willReturnOnConsecutiveCalls($srcEvent, $dstEvent);
+            ->willReturnOnConsecutiveCalls(
+                Event::fromArray($srcEvent),
+                Event::fromArray($dstEvent)
+            );
 
         $this->eventStore
             ->expects($this->exactly(2))
             ->method('publish')
-            ->willReturn(true);
+            ->willReturn(PublishResult::ok());
 
         $srcCoord = new Coordinate(30045, self::VALID_PUBKEY, 'src-folder');
         $dstCoord = new Coordinate(30045, self::VALID_PUBKEY, 'dst-folder');
 
         $result = $this->service->moveEntry($srcCoord, $dstCoord, $entryCoord);
 
-        $this->assertCount(0, $result['src']->getEntries());
-        $this->assertCount(1, $result['dst']->getEntries());
+        // Source should have no `a` tags, destination should have 1
+        $this->assertCount(0, $result['src']->getTagValues('a'));
+        $this->assertCount(1, $result['dst']->getTagValues('a'));
+        $this->assertSame($entryCoord->toString(), $result['dst']->getTagValues('a')[0][1]);
     }
 
-    public function testCanReorderEntries(): void
-    {
-        $coord1 = new Coordinate(30040, self::VALID_PUBKEY, 'file1');
-        $coord2 = new Coordinate(30041, self::VALID_PUBKEY, 'file2');
-
-        $event = [
-            'id' => 'event123',
-            'kind' => 30045,
-            'pubkey' => self::VALID_PUBKEY,
-            'created_at' => 1234567890,
-            'content' => '',
-            'tags' => [
-                ['d', 'my-folder'],
-                ['title', 'My Folder'],
-                ['a', $coord1->toString()],
-                ['a', $coord2->toString()],
-            ],
-        ];
-
-        $this->eventStore
-            ->expects($this->once())
-            ->method('getLatestByCoordinate')
-            ->willReturn($event);
-
-        $this->eventStore
-            ->expects($this->once())
-            ->method('publish')
-            ->willReturn(true);
-
-        $folderCoord = new Coordinate(30045, self::VALID_PUBKEY, 'my-folder');
-        $folder = $this->service->reorderEntries($folderCoord, [$coord2, $coord1]);
-
-        $entries = $folder->getEntries();
-        $this->assertTrue($entries[0]->getCoordinate()->equals($coord2));
-        $this->assertTrue($entries[1]->getCoordinate()->equals($coord1));
-    }
-
-    public function testReorderEntriesThrowsExceptionForMissingCoordinate(): void
-    {
-        $coord1 = new Coordinate(30040, self::VALID_PUBKEY, 'file1');
-        $coord2 = new Coordinate(30041, self::VALID_PUBKEY, 'file2');
-        $missingCoord = new Coordinate(30040, self::VALID_PUBKEY, 'missing');
-
-        $event = [
-            'id' => 'event123',
-            'kind' => 30045,
-            'pubkey' => self::VALID_PUBKEY,
-            'created_at' => 1234567890,
-            'content' => '',
-            'tags' => [
-                ['d', 'my-folder'],
-                ['title', 'My Folder'],
-                ['a', $coord1->toString()],
-                ['a', $coord2->toString()],
-            ],
-        ];
-
-        $this->expectException(ValidationException::class);
-        $this->expectExceptionMessage('not found in folder');
-
-        $this->eventStore
-            ->expects($this->once())
-            ->method('getLatestByCoordinate')
-            ->willReturn($event);
-
-        $folderCoord = new Coordinate(30045, self::VALID_PUBKEY, 'my-folder');
-        $this->service->reorderEntries($folderCoord, [$missingCoord, $coord1]);
-    }
+    // -------------------------------------------------------------------------
+    // setEntries()
+    // -------------------------------------------------------------------------
 
     public function testCanSetEntries(): void
     {
-        $event = [
+        $rawEvent = [
             'id' => 'event123',
             'kind' => 30045,
             'pubkey' => self::VALID_PUBKEY,
@@ -356,44 +433,47 @@ class FolderServiceTest extends TestCase
         $this->eventStore
             ->expects($this->once())
             ->method('getLatestByCoordinate')
-            ->willReturn($event);
+            ->willReturn(Event::fromArray($rawEvent));
 
         $this->eventStore
             ->expects($this->once())
             ->method('publish')
-            ->willReturn(true);
+            ->willReturn(PublishResult::ok());
 
         $folderCoord = new Coordinate(30045, self::VALID_PUBKEY, 'my-folder');
         $entry1 = new FolderEntry(new Coordinate(30040, self::VALID_PUBKEY, 'file1'));
         $entry2 = new FolderEntry(new Coordinate(30041, self::VALID_PUBKEY, 'file2'));
 
-        $folder = $this->service->setEntries($folderCoord, [$entry1, $entry2]);
+        $event = $this->service->setEntries($folderCoord, [$entry1, $entry2]);
 
-        $this->assertCount(2, $folder->getEntries());
+        $aTags = $event->getTagValues('a');
+        $this->assertCount(2, $aTags);
     }
+
+    // -------------------------------------------------------------------------
+    // archive()
+    // -------------------------------------------------------------------------
 
     public function testCanArchiveFolder(): void
     {
         $this->eventStore
             ->expects($this->once())
             ->method('publish')
-            ->with($this->callback(function ($event) {
-                $hasArchiveTag = false;
-                foreach ($event['tags'] as $tag) {
+            ->with($this->callback(function (Event $event) {
+                foreach ($event->tags as $tag) {
                     if ($tag[0] === 'status' && $tag[1] === 'archived') {
-                        $hasArchiveTag = true;
-                        break;
+                        return true;
                     }
                 }
-                return $hasArchiveTag;
+                return false;
             }))
-            ->willReturn(true);
+            ->willReturn(PublishResult::ok());
 
         $coordinate = new Coordinate(30045, self::VALID_PUBKEY, 'my-folder');
-        $folder = new \DecentNewsroom\NostrDrive\Domain\Folder($coordinate);
+        $folder = new Folder($coordinate);
 
         $result = $this->service->archive($folder);
 
-        $this->assertTrue($result);
+        $this->assertTrue($result->isSuccess());
     }
 }

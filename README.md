@@ -127,5 +127,5 @@ For NIP-09 deletions, implement at the integration layer.
 ## See Also
 
 - [Full Specification](docs/SPECIFICATION.md) - Comprehensive technical spec
-- [TODO](docs/0.1.0/TODO.md) - Implementation notes and refactoring guidance
+- [TODO](docs/TODO.md) - Implementation notes and refactoring guidance
 

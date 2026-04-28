@@ -1,10 +1,16 @@
 # Nostr Drive PHP Library
 
-A framework-agnostic PHP library that implements a filesystem-like hierarchy on Nostr using Drive events (kind:30042) and Folder events (kind:30045). It provides deterministic CRUD for drives and folders, plus membership operations (add/remove/move/reorder) over addressable event coordinates.
+Framework-agnostic PHP library for a Nostr filesystem-like hierarchy using Drive events (`kind:30042`) and Folder events (`kind:30045`).
+
+The library is coordinate-first:
+
+- folder membership is represented by ordered `a` tags
+- replaceable/addressable content is linked via `kind:pubkey:d` coordinates
+- mutating operations publish a new event for the same coordinate
 
 ## Requirements
 
-- PHP 8.2 or higher
+- PHP 8.2+
 - Composer
 
 ## Installation
@@ -13,206 +19,129 @@ A framework-agnostic PHP library that implements a filesystem-like hierarchy on 
 composer require decent-newsroom/nostr-drive
 ```
 
-## Architecture
+## Domain Model
 
-The library is organized into several layers:
+- `Coordinate`: value object for `kind:pubkey:d` identifiers
+- `Event`: typed event DTO (`id`, `kind`, `pubkey`, `createdAt`, `tags`, `content`, `sig`)
+- `PublishResult`: publish outcome value object
+- `Meta`: metadata value object (`title`, `description`)
+- `Drive`: drive aggregate (`30042`) with ordered root mounts
+- `Folder`: folder aggregate (`30045`) with ordered membership entries
+- `FolderEntry`: coordinate + optional relay/event/name hints
 
-### Domain
-Contains the core domain models:
-- **Address**: Represents a Nostr address - can be either a pubkey or a coordinate (kind:pubkey:d-tag for addressable events)
-- **Drive**: Represents a Drive event (kind:30042), the root container for organizing files and folders
-- **Folder**: Represents a Folder event (kind:30045), which can contain entries of allowed kinds
-- **FolderEntry**: Represents an entry within a folder, supporting both event IDs and addressable coordinates
+## Contract
 
-### Contract
-Defines the interfaces that must be implemented:
-- **EventStoreInterface**: Interface for interacting with the Nostr event store
-  - `getLatestByAddress()`: Get the latest event for a given address and kind
-  - `getById()`: Get an event by its ID
-  - `getLatestByAddresses()`: Get the latest events for multiple addresses
-  - `publish()`: Publish an event to the Nostr network
-
-### Service
-Provides business logic for managing drives and folders:
-- **DriveService**: CRUD operations for Drive entities
-- **FolderService**: CRUD operations for Folder entities plus entry management
-
-### Validation
-- **KindValidator**: Validates event kinds for folder entries. Only allows:
-  - 30040, 30041: File events
-  - 30024, 30023: Long-form content
-  - 31924, 31923, 31922: App-specific events
-
-### Exception
-Custom exceptions for error handling:
-- **NostrDriveException**: Base exception
-- **ValidationException**: Thrown when validation fails
-- **NotFoundException**: Thrown when an entity is not found
-- **InvalidKindException**: Thrown when an invalid kind is used
-
-## Usage
-
-### Implementing the EventStore
-
-First, you need to implement the `EventStoreInterface` to connect to your Nostr relays:
+Implement `EventStoreInterface` to connect to relays:
 
 ```php
 use DecentNewsroom\NostrDrive\Contract\EventStoreInterface;
-use DecentNewsroom\NostrDrive\Domain\Address;
+use DecentNewsroom\NostrDrive\Domain\Coordinate;
+use DecentNewsroom\NostrDrive\Domain\Event;
+use DecentNewsroom\NostrDrive\Domain\PublishResult;
 
-class MyEventStore implements EventStoreInterface
+final class MyEventStore implements EventStoreInterface
 {
-    public function getLatestByAddress(Address $address, int $kind, ?string $identifier = null): ?array
+    public function getLatestByCoordinate(Coordinate $coordinate): ?Event
     {
-        // Implement your logic to fetch the latest event from Nostr relays
-        // Return null if not found
+        // Fetch and return latest replaceable event for this coordinate.
     }
 
-    public function getById(string $eventId): ?array
+    public function getLatestByCoordinates(array $coordinates): array
     {
-        // Implement your logic to fetch an event by ID
-        // Return null if not found
+        // Return array<string, Event> keyed by coordinate string.
     }
 
-    public function getLatestByAddresses(array $addresses, int $kind): array
+    public function getById(string $eventId): ?Event
     {
-        // Implement your logic to fetch latest events for multiple addresses
-        // Return array indexed by address pubkey
+        // Fetch concrete event by id.
     }
 
-    public function publish(array $event): bool
+    public function publish(Event $event): PublishResult
     {
-        // Implement your logic to publish an event to Nostr relays
-        // Return true if successful
+        // Publish signed event and return outcome.
     }
 }
 ```
 
-### Working with Drives
+## Service Usage
+
+### Drive operations
 
 ```php
+use DecentNewsroom\NostrDrive\Domain\Coordinate;
+use DecentNewsroom\NostrDrive\Domain\Drive;
+use DecentNewsroom\NostrDrive\Domain\Meta;
 use DecentNewsroom\NostrDrive\Service\DriveService;
-use DecentNewsroom\NostrDrive\Domain\Address;
 
-$eventStore = new MyEventStore();
 $driveService = new DriveService($eventStore);
 
-// Create a new drive
-$address = new Address('pubkey123');
-$drive = $driveService->create(
-    $address,
-    'my-drive',      // identifier (d-tag)
-    'My Drive',      // name
-    []               // additional tags
+$driveCoord = new Coordinate(Drive::KIND, $pubkey, 'my-drive');
+$themes = new Coordinate(30045, $pubkey, 'themes');
+$magazines = new Coordinate(30045, $pubkey, 'magazines');
+
+// create() publishes and returns Event
+$driveEvent = $driveService->create(
+    $driveCoord,
+    [$themes, $magazines],
+    new Meta('My Drive', 'Personal workspace')
 );
 
-// Create an address as a coordinate
-$coordinateAddress = new Address('pubkey123', [], 30042, 'my-drive');
-echo $coordinateAddress->toString(); // "30042:pubkey123:my-drive"
+// get() returns Drive domain object
+$drive = $driveService->get($driveCoord);
 
-// Get a drive
-$drive = $driveService->get($address, 'my-drive');
-
-// Update a drive
-$drive->setName('Updated Drive Name');
-$driveService->update($drive);
-
-// Delete a drive
-$driveService->delete($drive);
+// setRoots() publishes and returns Event
+$updatedDriveEvent = $driveService->setRoots($driveCoord, [$themes]);
 ```
 
-### Working with Folders
+### Folder operations
 
 ```php
+use DecentNewsroom\NostrDrive\Domain\Coordinate;
+use DecentNewsroom\NostrDrive\Domain\Folder;
+use DecentNewsroom\NostrDrive\Domain\FolderEntry;
+use DecentNewsroom\NostrDrive\Domain\Meta;
 use DecentNewsroom\NostrDrive\Service\FolderService;
-use DecentNewsroom\NostrDrive\Domain\Address;
 
-$eventStore = new MyEventStore();
 $folderService = new FolderService($eventStore);
 
-// Create a new folder
-$address = new Address('pubkey123');
-$folder = $folderService->create(
-    $address,
-    'my-folder',     // identifier (d-tag)
-    'My Folder',     // name
-    []               // additional tags
+$folderCoord = new Coordinate(Folder::KIND, $pubkey, 'themes');
+$articleCoord = new Coordinate(30024, $pubkey, 'my-article');
+
+// create() publishes and returns Event
+$folderEvent = $folderService->create(
+    $folderCoord,
+    [],
+    new Meta('Themes', 'Theme collection')
 );
 
-// Get a folder
-$folder = $folderService->get($address, 'my-folder');
+// add() publishes and returns Event
+$addEvent = $folderService->add(
+    $folderCoord,
+    new FolderEntry($articleCoord, 'wss://relay.example', null, 'My Article')
+);
 
-// Update a folder
-$folder->setName('Updated Folder Name');
-$folderService->update($folder);
+// remove() publishes and returns Event
+$removeEvent = $folderService->remove($folderCoord, $articleCoord);
+
+// reorder() publishes and returns Event
+$coord1 = new Coordinate(30024, $pubkey, 'article-1');
+$coord2 = new Coordinate(30024, $pubkey, 'article-2');
+$reorderEvent = $folderService->reorder($folderCoord, [$coord2, $coord1]);
 ```
 
-### Managing Folder Entries
+## Membership and Tag Shape
 
-```php
-// Add an entry to a folder (only allowed kinds: 30040, 30041, 30024, 30023, 31924, 31923, 31922)
-// Regular event (by event ID only)
-$folder = $folderService->addEntry(
-    $folder,
-    'event123',      // event ID
-    30040            // event kind
-);
+Folder membership is `a`-tag only.
 
-// Addressable event (with coordinate - both 'e' and 'a' tags will be used)
-$folder = $folderService->addEntry(
-    $folder,
-    'event456',      // event ID
-    30041,           // event kind
-    'pubkey789',     // pubkey for addressable event
-    'my-file'        // d-tag identifier for addressable event
-);
+- Minimal: `["a", "kind:pubkey:d"]`
+- With relay hint: `["a", "kind:pubkey:d", "relay"]`
+- Extended hints: `["a", "kind:pubkey:d", "relay", "last-seen-event-id", "name-hint"]`
 
-// Remove an entry from a folder
-$folder = $folderService->removeEntry($folder, 'event123');
-
-// Reorder entries
-$folder = $folderService->reorderEntries(
-    $folder,
-    ['event2', 'event1', 'event3']  // new order of event IDs
-);
-
-// Access folder entries
-$entries = $folder->getEntries();
-foreach ($entries as $entry) {
-    echo "Event ID: " . $entry->getEventId() . "\n";
-    echo "Kind: " . $entry->getKind() . "\n";
-    echo "Position: " . $entry->getPosition() . "\n";
-}
-```
-
-### Validation
-
-The library automatically validates event kinds when adding entries to folders:
-
-```php
-try {
-    // This will throw an InvalidKindException because kind 1 is not allowed
-    $folderService->addEntry($folder, 'event123', 1);
-} catch (\DecentNewsroom\NostrDrive\Exception\InvalidKindException $e) {
-    echo "Invalid kind: " . $e->getMessage();
-}
-
-// Check if a kind is allowed
-use DecentNewsroom\NostrDrive\Validation\KindValidator;
-
-if (KindValidator::isAllowed(30040)) {
-    echo "Kind 30040 is allowed";
-}
-
-// Get all allowed kinds
-$allowedKinds = KindValidator::getAllowedKinds();
-```
+Trailing optional fields may be omitted when empty. Tag order is the default display order.
 
 ## Event Structure
 
-### Drive Event (kind:30042)
-
-Drive events have **empty content**. All information is stored in tags.
+### Drive Event (`kind:30042`)
 
 ```json
 {
@@ -222,37 +151,38 @@ Drive events have **empty content**. All information is stored in tags.
   "content": "",
   "tags": [
     ["d", "drive-identifier"],
-    ["name", "My Drive"]
+    ["title", "My Drive"],
+    ["description", "Personal files and folders"],
+    ["a", "30045:author_pubkey:themes", "wss://relay.example"]
   ]
 }
 ```
 
-### Folder Event (kind:30045)
-
-Folder events have **empty content**. All information is stored in tags.
-Entries use both 'e' tags (event ID) and 'a' tags (addressable coordinate) for addressable events.
+### Folder Event (`kind:30045`)
 
 ```json
 {
   "kind": 30045,
   "pubkey": "author_pubkey",
-  "created_at": 1234567890,
+  "created_at": 1234567891,
   "content": "",
   "tags": [
-    ["d", "folder-identifier"],
-    ["name", "My Folder"],
-    ["e", "event_id_1", "", "30040", "0"],
-    ["e", "event_id_2", "", "30041", "1"],
-    ["a", "30041:pubkey789:my-file", "", "1"]
+    ["d", "themes"],
+    ["title", "Themes"],
+    ["description", "Website themes and templates"],
+    ["a", "30045:author_pubkey:themes/default", "wss://relay.example", "", "default"],
+    ["a", "30024:author_pubkey:article-1", "wss://relay.example"]
   ]
 }
 ```
 
-Note: The 'a' tag is only included for addressable replaceable events. Regular events only have an 'e' tag.
+## Allowed kinds
+
+`KindValidator` allowlist:
+
+- `30040`, `30041`, `30024`, `30023`, `30045`, `31924`, `31923`, `31922`
 
 ## Testing
-
-Run the test suite with PHPUnit:
 
 ```bash
 composer install
@@ -261,8 +191,4 @@ vendor/bin/phpunit
 
 ## License
 
-This library is licensed under the MIT License. See the [LICENSE](../LICENSE) file for details.
-
-## Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
+MIT

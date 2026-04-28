@@ -5,7 +5,41 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.1.0] - Unreleased
+## [0.1.1] - Unreleased
+
+Typed event transport refactor and API stabilization on top of `0.1.0`.
+
+### Added
+- `Event` DTO for typed Nostr event transport
+  - `Event::fromArray()` and `Event::toArray()` helpers
+  - `getTagValue()` / `getTagValues()` tag accessors
+- `PublishResult` value object for publish outcomes
+- `Meta` value object for drive/folder metadata (`title`, `description`)
+- Additional PHPUnit fixtures and DTO tests for event parsing and tag-shape validation
+
+### Changed
+- `EventStoreInterface` now uses typed event signatures
+  - `getLatestByCoordinate(Coordinate): ?Event`
+  - `getLatestByCoordinates(array): array<string, Event>`
+  - `getById(string): ?Event`
+  - `publish(Event): PublishResult`
+- `DriveService` API now publishes typed `Event` payloads for mutating operations
+  - `create(...): Event`
+  - `setRoots(...): Event`
+  - `archive(...): PublishResult`
+- `FolderService` method names stabilized
+  - `addEntry()` -> `add()`
+  - `removeEntry()` -> `remove()`
+  - `reorderEntries()` -> `reorder()`
+- `FolderService` mutating operations now publish typed `Event` payloads and keep ordered `a`-tag membership output
+
+### Documentation
+- Updated README and 0.1.0 notes to reflect coordinate-first membership and current API naming
+
+### Tests
+- Expanded suite from 65 tests / 166 assertions to 73 tests / 207 assertions
+
+## [0.1.0]
 
 Initial implementation of the nostr-drive library with coordinate-first design.
 
