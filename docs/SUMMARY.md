@@ -12,7 +12,7 @@ This file is kept as a historical marker for the initial `0.1.0` milestone.
 - Release history: `CHANGELOG.md`
 - Current developer docs: `docs/README.md`
 - Current specification: `docs/SPECIFICATION.md`
-- 0.1.0 refactor checklist status: `docs/0.1.0/TODO.md`
+- 0.1.0 refactor checklist status: `docs/TODO.md`
 
 ## Note
 
