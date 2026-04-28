@@ -126,6 +126,7 @@ For NIP-09 deletions, implement at the integration layer.
 
 ## See Also
 
+- [Integration Guide](docs/INTEGRATION.md) - How to use this library in another project
 - [Full Specification](docs/SPECIFICATION.md) - Comprehensive technical spec
 - [TODO](docs/TODO.md) - Implementation notes and refactoring guidance
 
